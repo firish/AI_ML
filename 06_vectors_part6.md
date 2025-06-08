@@ -8,9 +8,9 @@ This referes to the modern transformer-based encoders that power most semantic-s
 ```bash
 | Piece                   | What it holds                                                                                                                                 | Why it matters                                                                            |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **Tokenizer**           | Splits text into sub-word tokens and maps each to an integer ID.                                                                              | Lets one vocabulary handle *unseen* words by composing them from pieces (`▁quant`, `um`). |
-| **Transformer encoder** | A stack of self-attention layers (BERT, RoBERTa, MiniLM…).                                                                                    | Learns contextualised token embeddings that “know” their neighbours.                      |
-| **Pooling head**        | Converts the *sequence* of token vectors into **one** fixed-length sentence vector.  Choices: `[CLS]`, mean-pool, or a small attention layer. | This is the vector you’ll store.  Size is fixed: 384 / 768 / 1536 d.                      |
+| Tokenizer           | Splits text into sub-word tokens and maps each to an integer ID.                                                                              | Lets one vocabulary handle *unseen* words by composing them from pieces (`▁quant`, `um`). |
+| Transformer encoder | A stack of self-attention layers (BERT, RoBERTa, MiniLM…).                                                                                    | Learns contextualised token embeddings that “know” their neighbours.                      |
+| Pooling head        | Converts the sequence of token vectors into **one** fixed-length sentence vector.  Choices: `[CLS]`, mean-pool, or a small attention layer. | This is the vector you’ll store.  Size is fixed: 384 / 768 / 1536 d.                      |
 
 ```
 
@@ -22,7 +22,7 @@ This referes to the modern transformer-based encoders that power most semantic-s
 
 example:
 ```bash
-| Anchor (*v₁*)                          | Positive (*v₂*)             | Negative (*v₃*)                       |
+| Anchor (v₁)                            | Positive (v₂)                 | Negative (v₃)                       |
 | -------------------------------------- | --------------------------- | ------------------------------------- |
 | “How do I sort a list in Python?”      | “Python list sort methods?” | “What is the GDP of Canada?”          |
 | “Symptoms of iron-deficiency anaemia?” | “Signs you’re low on iron”  | “Best way to waterproof hiking boots” |
@@ -39,9 +39,9 @@ Usage:
 ```bash
 | Scenario                                                | Steps                                                                                                                                                                                         |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Short text (≤ context window, typically 512 tokens)** | Tokenize → encode → store or compare the vector.                                                                                                                                              |
-| **Long text (book, PDF, chat log)**                     | ① Split into overlapping chunks (e.g., 256 tokens). ② Encode each chunk. ③ Either: store chunk vectors directly *(most common for RAG)*, or mean-/attention-pool them into one “book vector.” |
-| **Real-time query**                                     | Encode the query sentence → cosine-search in vector DB → retrieve top-k chunks → optional re-ranking or pass to LLM.                                                                          |
+| Short text (≤ context window, typically 512 tokens) | Tokenize → encode → store or compare the vector.                                                                                                                                              |
+| Long text (book, PDF, chat log)                     | ① Split into overlapping chunks (e.g., 256 tokens). ② Encode each chunk. ③ Either: store chunk vectors directly (most common for RAG), or mean-/attention-pool them into one “book vector.” |
+| Real-time query                                     | Encode the query sentence → cosine-search in vector DB → retrieve top-k chunks → optional re-ranking or pass to LLM.                                                                          |
 ```
 
 ### Demo
@@ -81,7 +81,7 @@ Encoder details
 ```bash
 | Loss                                             | Formula (conceptual)                                              | Why it fits the goal                                                                   |
 | ------------------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| **Cosine-similarity loss (Siamese/Contrastive)** | *L* = max(0, margin – cos(v₁, v₂)) + max(0, cos(v₁, v₃) – margin) | Directly pushes positives above a margin and negatives below it in cosine space.       |
-| **Triplet loss** (Anchor-Pos-Neg)                | *L* = max(0, cos(v₁, v₃) – cos(v₁, v₂) + α)                       | Same idea but uses one hinge term; α≈0.2.                                              |
-| **InfoNCE / NT-Xent** (in-batch contrastive)     | *L* = – log \[e^{cos(v₁,v₂)/τ} / Σ\_{j} e^{cos(v₁,v\_j)/τ}]       | Treats every other item in the batch as a negative; temperature τ sharpens similarity. |
+| Cosine-similarity loss (Siamese/Contrastive) | L = max(0, margin – cos(v₁, v₂)) + max(0, cos(v₁, v₃) – margin) | Directly pushes positives above a margin and negatives below it in cosine space.       |
+| Triplet loss (Anchor-Pos-Neg)                | L = max(0, cos(v₁, v₃) – cos(v₁, v₂) + α)                       | Same idea but uses one hinge term; α≈0.2.                                              |
+| InfoNCE / NT-Xent** (in-batch contrastive)     | L = – log \[e^{cos(v₁,v₂)/τ} / Σ\_{j} e^{cos(v₁,v\_j)/τ}]       | Treats every other item in the batch as a negative; temperature τ sharpens similarity. |
 ```
