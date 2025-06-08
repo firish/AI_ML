@@ -10,34 +10,89 @@ To turn many lookup results into one representation you have four common options
 
 Take every word in a span, look up its pre-trained embedding, then apply an element-wise mean, sum, or max across the resulting matrix:
 
-```ini
+```math
 v_doc = (1 / n) * Σ_{i=1…n} v_word_i  
 ```
-​
- 
-| Why people still use it |
 
-Speed & memory: one pass through the text, one cheap NumPy operation.
+where is it used?
+- Speed & memory: one pass through the text, one cheap NumPy operation.
+- No extra training: works with any off-the-shelf word2vec/FastText table.
+- Good enough for coarse tasks: quick clustering, duplicate-document detection, measuring topical drift over time.
 
-No extra training: works with any off-the-shelf word2vec/FastText table.
+What are its problems?
+- Order lost: “dog bites man” ≈ “man bites dog.”
+- Stop-word dilution: high-frequency words (“the”, “and”) pull vectors toward the corpus mean, blurring distinctions.
+- Negation & syntax ignored: “not good” ≈ “good.”
 
-Good enough for coarse tasks: quick clustering, duplicate-document detection, measuring topical drift over time.
 
-| Blind spots |
+### 2. Weighted pooling
 
-Order lost: “dog bites man” ≈ “man bites dog.”
+**Same as simple pooling, but multiply each word vector by a weight that reflects its importance before pooling.**
 
-Stop-word dilution: high-frequency words (“the”, “and”) pull vectors toward the corpus mean, blurring distinctions.
+```math
+v_doc = (Σ_i w_i * v_word_i) / (Σ_i w_i)  
+```
 
-Negation & syntax ignored: “not good” ≈ “good.”
+For the pool weighting, we mostly use
 
-| Tiny code snippet |
+#### 1. TF-IDF
+```math
+w_i = tf(i, d) * log(N / df(i))
 
-python
-Copy
-Edit
-def mean_pool(text, wv):
+where,
+tf(i, d) — term frequency: how many times word i appears in document d.
+df(i) — document frequency: in how many documents word i occurs at least once.
+N — total number of documents in the corpus.
+log(N / df(i)) — inverse-document frequency; rare words get a big boost, ubiquitous words get < 1
+```
+
+When it shines
+- You have a large, static corpus and can pre-compute df counts once.
+- You need a quick baseline for search ranking or clustering.
+- Word order is unimportant, but keyword salience matters (news headlines, product tags).
+
+#### 2 Smooth Inverse Frequency (SIF)
+```math
+w_i = a / (a + freq(i))       # a ≈ 0.001  
+
+where,
+freq(i) — the probability of word i in the entire corpus
+freq(i) = total_occurrences(i) / total_words
+a — small smoothing constant; keeps weights bounded even for extremely rare words.
+```
+
+Why it exists?
+- TF-IDF can explode for ultra-rare tokens.
+- TF-IDF doesnt do too well when document frequency varies widely.
+- SIF scales each word by a smooth curve that monotonically down-weights common words without wild jumps.
+
+When to use?
+- You want a one-pass, streaming computation (need only running word frequencies, not per-doc df).
+- Text length varies widely (tweets ↔ manuals) and you want weights that stay stable.
+
+### Advantages
+- You still need fast inference but plain averaging is too blunt; Captures keyword salience (“quantum” matters more than “the”).
+- Retains interpretability: you can inspect which words carried the weight.
+- Document length varies wildly; weighting tames the bias toward long texts.
+- You’re building a baseline for semantic search before investing in transformers.
+
+### Limitations
+- Word order and compositional meaning are still missing.
+- Requires pre-computing IDF statistics on your corpus.
+- Negation/sarcasm problems still persist.
+
+
+```python
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+
+corpus = ["Deep learning models are data hungry",
+          "The stock market crashed yesterday"]
+vec = TfidfVectorizer(analyzer=str.split).fit(corpus)
+idf = dict(zip(vec.get_feature_names_out(), vec.idf_))  # word ➜ IDF
+
+def tfidf_pool(text, wv):
     tokens = [t for t in text.lower().split() if t in wv]
-    return np.mean([wv[t] for t in tokens], axis=0)   # shape (300,)
-Same dimensionality as the original word vectors (e.g., 300 d).
-
+    weights = [idf.get(t, 0.0) for t in tokens]
+    return np.average([wv[t] for t in tokens], axis=0, weights=weights)
+```
