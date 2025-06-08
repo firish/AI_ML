@@ -23,10 +23,12 @@ Rules of thumb:
 
 - You slide a small window across every document’s text, just like word2vec.
 - For each position you play one of two flavours of “guess-the-word”:
+```
 | Flavour                                | What you feed into the tiny neural net                              | What the net must guess                                          |
 | -------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | **PV-DM** (Distributed Memory)         | *Doc-vector* **plus** the few context words around a missing target | The target word                                                  |
 | **PV-DBOW** (Distributed Bag-of-Words) | *Doc-vector only*                                                   | Several random words that appear somewhere in that same document |
+```
 
 - During back-prop the model nudges both the word rows and that document’s row so the guess becomes a little less wrong.
 
