@@ -53,7 +53,7 @@ When it shines
 
 #### 2 Smooth Inverse Frequency (SIF)
 ```math
-w_i = a / (a + freq(i))       # a ≈ 0.001  
+w_i = a / (a + freq(i)); where a ≈ 0.001  
 
 where,
 freq(i) — the probability of word i in the entire corpus
