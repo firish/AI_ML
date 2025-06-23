@@ -64,24 +64,3 @@ print(f"physics↔physics   cosine ≈ {sim_qc:.3f}")
 print(f"physics↔tacos     cosine ≈ {sim_qt:.3f}")
 ```
 Expected output: first similarity high (~0.6–0.8), second near zero or negative—showing topic separation.
-
-
-
-
-### (Optional)
-
-Encoder details
-
-1. Under the hood decisions for the encoder neural nets
-- GELU in each transformer block’s feed-forward sub-layer (chosen because it behaves smoothly like a normal CDF and empirically improves convergence over ReLU).
-- Tanh or softmax if an attention-based pooling head is used—tanh for a small dense layer, softmax to weight tokens.
-- No activation at the very end; we rely on cosine similarity, which only needs the raw vector.
-
-2. Loss Functions
-```bash
-| Loss                                             | Formula (conceptual)                                              | Why it fits the goal                                                                   |
-| ------------------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Cosine-similarity loss (Siamese/Contrastive)     | L = max(0, margin – cos(v₁, v₂)) + max(0, cos(v₁, v₃) – margin) | Directly pushes positives above a margin and negatives below it in cosine space.       |
-| Triplet loss (Anchor-Pos-Neg)                    | L = max(0, cos(v₁, v₃) – cos(v₁, v₂) + α)                       | Same idea but uses one hinge term; α≈0.2.                                              |
-| InfoNCE / NT-Xent (in-batch contrastive)         | L = – log \[e^{cos(v₁,v₂)/τ} / Σ\_{j} e^{cos(v₁,v\_j)/τ}]       | Treats every other item in the batch as a negative; temperature τ sharpens similarity. |
-```
