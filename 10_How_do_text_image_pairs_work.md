@@ -45,7 +45,16 @@ Captions come “for free” from the web (alt-text, social media, etc.).
 
 3. **Normalize** vectors to unit length (cosine-friendly).
 
-4. **Similarity matrix**  
+How it’s done
+```text
+step	value
+Original vector	v = (4, –3, 12)
+Norm	‖v‖₂ = √(4² + (–3)² + 12²) = √(16 + 9 + 144) = √169 = 13
+Unit-length vector	v̂ = (4/13, –3/13, 12/13) ≈ (0.308, –0.231, 0.923)
+```
+The new vector points in exactly the same direction—only its scale has changed.
+
+5. **Similarity matrix**  
    `S = v_I · v_Tᵀ`
 
    |     | **T₀** | **T₁** | **T₂** |
@@ -54,7 +63,7 @@ Captions come “for free” from the web (alt-text, social media, etc.).
    | **I₁** | 0.12 | 0.88 | 0.07 |
    | **I₂** | 0.05 | 0.09 | 0.95 |
 
-5. **Contrastive loss**
+6. **Contrastive loss**
 
    ```
    Loss_row = CE(softmax(row_i), target = i)
@@ -62,7 +71,7 @@ Captions come “for free” from the web (alt-text, social media, etc.).
    Total    = (Loss_row + Loss_col) / 2
    ```
 
-6. **Back-propagate** through *both* encoders – correct pairs climb, wrong pairs sink.
+7. **Back-propagate** through *both* encoders – correct pairs climb, wrong pairs sink.
 
 After millions of batches the encoders share a **joint semantic space**.
 
