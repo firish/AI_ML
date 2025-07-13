@@ -50,7 +50,19 @@ C = (-4, 3)  # len 5   (~90°)
 
 ---
 
-## 4 · Best-Fit Use-Cases  
+## 4 · Pros & Cons in Plain Language
+
+| Measure | Good for… | Watch out for… |
+|---------|-----------|----------------|
+| **Cosine** | Text or image embeddings where only meaning (direction) matters and vector lengths vary. | Throws away length info: a confident vs. weak embedding look identical after normalising. |
+| **Euclidean** | Low-dimensional data (dozens of numbers) where absolute scale matters—e.g., a robot arm’s XYZ position. | In hundreds of dimensions every distance converges; KD-trees & similar indexes slow down. |
+| **Dot product** | Recommendation models where longer vectors mean “more confident”; super-fast GPU math (one fused multiply-add). | Scores explode with length—one giant-norm vector can dominate even if its direction is off. |
+| **Angular** | Situations that literally care about the angle (directional sensors) or need an interpretable 0-to-π metric. | Requires a slow `arccos` unless you convert via cosine first; same limits as cosine otherwise. |
+
+---
+
+
+## 5 · Best-Fit Use-Cases  
 
 | Choose this… | When… | Why… |
 |--------------|-------|------|
