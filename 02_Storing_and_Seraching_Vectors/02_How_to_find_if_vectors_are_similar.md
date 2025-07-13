@@ -12,10 +12,12 @@
 
 ## 2 · Why Normalise (L2-normalisation)?  
 
-Normalise each vector \( v \) to unit length  
+Normalise each vector \( v \) to unit length
+```math
 \[
 \hat v \;=\;\frac{v}{\lVert v\rVert}
 \]
+```
 
 * Cancels magnitudes so cosine becomes just a dot-product.  
 * Stops “long” vectors looking similar to everything.  
