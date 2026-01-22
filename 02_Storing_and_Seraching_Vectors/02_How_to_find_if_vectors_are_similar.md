@@ -21,6 +21,131 @@ Normalise each vector \( v \) to unit length
 * Stops “long” vectors looking similar to everything.  
 * Distance `1 − cosine` now obeys the triangle inequality.
 
+**Intuition that actually holds**
+
+Assume a **well-trained encoder**, where *meaning is encoded in direction*, not just length.
+
+#### Example vectors (toy but realistic)
+```text
+dog                  = (1.0, 1.0)
+friendly dog in park = (1.1, 1.0)     # very similar direction
+finance & computers  = (-1.0, 1.0)    # very different direction
+```
+
+---
+
+#### The Problem: WITHOUT Normalization
+
+Computing **dot product similarity** directly:
+```text
+dog · (friendly dog)  = 1.0×1.1 + 1.0×1.0 = 2.1
+dog · (finance)       = 1.0×(-1.0) + 1.0×1.0 = 0.0
+```
+
+Now imagine a **longer version** of the finance text:
+```text
+finance & computers (verbose) = (-2.0, 2.0)  # same direction, just 2× longer
+
+dog · (finance verbose) = 1.0×(-2.0) + 1.0×2.0 = 0.0
+```
+
+This looks fine, but now consider:
+```text
+friendly dog (verbose) = (2.2, 2.0)  # same direction, 2× longer
+
+dog · (friendly dog verbose) = 1.0×2.2 + 1.0×2.0 = 4.2  ← much higher!
+```
+
+**Problem:** The similarity score depends on **vector length**, not just meaning. Longer documents artificially get higher scores.
+
+#### Computing Cosine Similarity (without pre-normalization)
+```text
+cos(dog, friendly dog) = 2.1 / (√2 × √2.21) = 2.1 / 2.10 = 1.00  ✓
+cos(dog, finance)      = 0.0 / (√2 × √2)    = 0.0 / 2.00 = 0.00  ✓
+
+cos(dog, friendly verbose) = 4.2 / (√2 × √12.84) = 4.2 / 5.07 = 0.83  ✓
+```
+
+Cosine handles length properly, **but requires division per comparison** (expensive at scale).
+
+
+#### The Solution: WITH L2-Normalization
+
+After L2-normalization (divide by ‖v‖):
+```text
+dog                  → (0.707, 0.707)   # ‖v‖ = √2
+friendly dog in park → (0.740, 0.672)   # ‖v‖ = √2.21
+finance & computers  → (-0.707, 0.707)  # ‖v‖ = √2
+```
+
+Now compute **dot product** (which equals cosine for normalized vectors):
+```text
+dog · (friendly dog)  = 0.707×0.740 + 0.707×0.672 = 0.998  ← very high similarity ✓
+dog · (finance)       = 0.707×(-0.707) + 0.707×0.707 = 0.000  ← no similarity ✓
+```
+
+Even with verbose versions:
+```text
+friendly dog (verbose) = (2.2, 2.0) → normalized: (0.740, 0.672)  # same as before!
+
+dog · (friendly verbose) = 0.707×0.740 + 0.707×0.672 = 0.998  ✓
+```
+
+**Key insight:** After normalization, length no longer matters—only direction.
+
+#### Side-by-Side Comparison
+
+| Query: `dog` | Vector | Without Norm (dot) | With Norm (dot = cos) |
+|--------------|--------|-------------------:|----------------------:|
+| friendly dog | (1.1, 1.0) | 2.1 | **0.998** |
+| finance | (-1.0, 1.0) | 0.0 | **0.000** |
+| friendly (2× longer) | (2.2, 2.0) | 4.2 ❌ | **0.998** ✓ |
+
+Without normalization, the verbose version scores **twice as high** (4.2 vs 2.1) despite having the same meaning!
+
+With normalization, both friendly dog variants score **identically** (0.998), as they should.
+
+---
+
+#### 1. Cancels magnitude so cosine becomes a dot product
+
+Cosine similarity is defined as:
+```
+cos(u,v) = (u·v) / (‖u‖‖v‖)
+```
+
+If all vectors are normalized beforehand (‖u‖ = ‖v‖ = 1):
+```
+cos(u,v) = u·v
+```
+
+**Why this matters:**
+- Simplifies computation: cosine ≡ dot product
+- Faster on GPUs and vector databases
+- Most ANN indexes assume this geometry
+
+#### 2. Prevents "long" vectors from looking similar to everything
+
+Without normalization, longer vectors (often from longer text) produce larger dot products even when meaning differs.
+
+Normalization enforces:
+- Similarity depends on **direction only**, not how "loud" or verbose the vector is
+
+This prevents:
+- Long documents dominating search results
+- Spurious matches caused by vector length instead of meaning
+
+#### 3. Makes distance geometry stable for search
+
+After normalization, all vectors lie on the **unit sphere**.
+
+This has practical benefits:
+- `1 − cosine` behaves like a proper distance
+- Nearest-neighbor graphs are more reliable
+- ANN search (HNSW, IVF) has predictable recall and latency
+
+**Normalization makes similarity search stable, fair, and index-friendly.**
+
 ---
 
 ## 3 · Similarity / Distance Measures  
