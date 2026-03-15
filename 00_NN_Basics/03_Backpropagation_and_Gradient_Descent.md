@@ -80,27 +80,102 @@ Too large: bounces around and never settles.
 
 Computing the gradient for a weight deep in the network requires the **chain rule** from calculus. Backpropagation is just the efficient algorithm for applying the chain rule layer by layer, from the output back to the input.
 
-You don't need to derive it yourself. The key intuition:
+### The Chain Rule (The One Piece of Math You Need)
+
+If A affects B, and B affects C, then:
 
 ```text
-Forward pass:   input → Layer 1 → Layer 2 → output → loss
-                                                       ↓
-Backward pass:  ← gradients flow back through each layer ←
-                each layer passes blame to the layer before it
+How much does A affect C?  =  (how much A affects B)  ×  (how much B affects C)
+
+In notation:   dC/dA = dC/dB × dB/dA
 ```
 
-Each layer asks: "given that my output was slightly off, how much was each of my inputs responsible?" That answer becomes the gradient for the weights in that layer, and the signal passed back to the layer before it.
+That's it. Backprop is just applying this rule repeatedly through each layer.
+
+### Walk-through: Computing Gradients for Every Weight
+
+A tiny network: 1 input, 1 hidden neuron, 1 output neuron, no activation (to keep the math visible).
 
 ```text
-Concrete flow for a 2-layer network:
-
-Forward:
-    x → [Layer 1, weights W1] → h → [Layer 2, weights W2] → output → loss
-
-Backward:
-    d(loss)/d(W2)  ← computed first  (output layer, easy)
-    d(loss)/d(W1)  ← computed second (multiply through Layer 2's gradient)
+Network:
+    x=2.0 —[w1=0.5]→ h —[w2=3.0]→ output → loss
+                                      ↕
+                                  target=4.0
 ```
+
+**Step 1: Forward pass**
+
+```text
+h      = x * w1      = 2.0 * 0.5  = 1.0
+output = h * w2      = 1.0 * 3.0  = 3.0
+loss   = (output - target)²  = (3.0 - 4.0)²  = 1.0
+```
+
+**Step 2: Backward pass — output layer (w2)**
+
+Start from the loss and work backwards. How much does w2 affect the loss?
+
+```text
+d(loss)/d(output) = 2 * (output - target) = 2 * (3.0 - 4.0) = -2.0
+     "the loss decreases if we increase the output" ✓ (output is 3, target is 4)
+
+d(output)/d(w2) = h = 1.0
+     "output = h * w2, so increasing w2 by 1 increases output by h"
+
+Chain rule:
+d(loss)/d(w2) = d(loss)/d(output) × d(output)/d(w2)
+              = -2.0 × 1.0
+              = -2.0
+     "increasing w2 decreases the loss" → so we should increase w2 ✓
+```
+
+**Step 3: Backward pass — hidden layer (w1)**
+
+Now the chain goes one step deeper. How much does w1 affect the loss?
+
+```text
+d(loss)/d(output) = -2.0             (already computed)
+d(output)/d(h)    = w2 = 3.0         (output = h * w2)
+d(h)/d(w1)        = x = 2.0          (h = x * w1)
+
+Chain rule (one more link in the chain):
+d(loss)/d(w1) = d(loss)/d(output) × d(output)/d(h) × d(h)/d(w1)
+              = -2.0 × 3.0 × 2.0
+              = -12.0
+```
+
+**Step 4: Update both weights**
+
+```text
+lr = 0.1
+
+w2_new = w2 - lr * d(loss)/d(w2) = 3.0 - 0.1 * (-2.0)  = 3.0 + 0.2  = 3.2  ↑
+w1_new = w1 - lr * d(loss)/d(w1) = 0.5 - 0.1 * (-12.0) = 0.5 + 1.2  = 1.7  ↑
+```
+
+Both weights increase, which makes the output larger, which is correct — it was 3.0 and needs to get to 4.0.
+
+### The Pattern for Any Network
+
+No matter how deep the network is, the process is the same:
+
+```text
+Forward:  x → Layer 1 → Layer 2 → ... → Layer N → loss
+
+Backward: Start at loss.
+          For each layer from N back to 1:
+              gradient for this layer's weights =
+                  (gradient flowing in from the right) × (this layer's local derivative)
+              pass the gradient leftward to the next layer
+```
+
+Each layer only needs two things:
+1. **The gradient flowing in from the layer above** (how much its output affected the loss)
+2. **Its own local derivative** (how much its weights affected its output)
+
+Multiply them. That's the gradient for that layer. Pass the signal backward. Repeat.
+
+In a real framework (PyTorch, TensorFlow), you never write this manually — `loss.backward()` does the entire backward pass automatically. But this is what it's doing under the hood.
 
 ---
 
