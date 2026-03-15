@@ -1,4 +1,4 @@
-### How do Neural Nets create embeddingd? (High-level)
+### How do Neural Nets create embeddings? (High-level)
 
 How a very popular vector embedding model like `word2vec` was trained?
 
@@ -10,7 +10,7 @@ like “cat” and “dog”—get similar vectors, while unrelated words—like
 - The model is just two tiny layers of weights (think of two Excel sheets full of numbers).
 - no convolutions
 - no deep stacks
-- There is an embedding layer at the end which generates the embedding for the raw input.
+- The **input** weight matrix is the embedding table — each row becomes the vector for one word. This is not the output layer; the output layer is just a prediction head used during training and discarded afterwards.
 
 3. Training data
 
@@ -52,7 +52,7 @@ Anything not in that original list maps to a special “UNK” (unknown) row, or
 | Google-News model (the classic pre-trained set) | **≈ 100 billion words**                        | hundreds of millions        | **≈ 3 million rows**                                         |
 
 - Skip-gram treats each centre word/context word pair as one positive sample.
-- window size is typicall small, k=5
+- window size is typically small, k=5
 - negative examples per center word is ~20 for small training pool, and ~5 for a large pool.
 
 

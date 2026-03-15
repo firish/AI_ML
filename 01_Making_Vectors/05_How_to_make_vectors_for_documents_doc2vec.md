@@ -19,7 +19,7 @@ Rules of thumb:
 
 2. The learning game
 - At the start every row in both tables is just random noise.
-- We still start with a trained word2Vec for the word embeddings as they have some semantics and grammar meaning encoded and help in faster convergence during retraining.
+- By default, doc2vec trains both tables (word + document) from scratch. You *can* optionally initialize word vectors from a pre-trained word2vec for faster convergence, but this is not standard — gensim's default trains everything jointly.
 
 - You slide a small window across every document’s text, just like word2vec.
 - For each position you play one of two flavours of “guess-the-word”:
@@ -44,10 +44,10 @@ Rules of thumb:
   - Add a new row, initialise it randomly.
   - Run 5–20 very quick gradient steps so that this fresh row alone can predict the document’s own words.
   - Stop; that updated row is the new document’s vector.
-  - Even on CPU this takes milliseconds, so you can process thousands per second in batch jobs.
+  - On CPU this is fast (typically milliseconds for short documents), though long documents with many inference epochs can take longer.
 
 5. Why bother instead of averaging word vectors?
-- The model learns that word order and co-occurrence patterns matter (e.g., “stock market crash” differs from “market stock crash”).
+- PV-DM learns that word order and co-occurrence patterns matter within its context window (e.g., “stock market crash” differs from “market stock crash”). Note: PV-DBOW ignores word order entirely — it's a bag-of-words method. Despite this, PV-DBOW often outperforms PV-DM in practice, which is counterintuitive.
 - The doc vector acts like a topic fingerprint that cannot be reconstructed by simply averaging its words.
 - Once trained, lookup is trivial—just read a row—so it is lighter than running a transformer encoder for every query.
 

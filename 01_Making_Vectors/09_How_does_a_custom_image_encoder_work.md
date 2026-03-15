@@ -46,11 +46,11 @@ but it translates to moving the filter kernel over the entire matrix and taking 
 
 Note:
 Depth of a filter always matches the number of input channels.
-Input tensor: 3 × 226 × 226 (one “page” each for Red, Green, Blue).
+Input tensor: 3 × 224 × 224 (one “page” each for Red, Green, Blue).
 Conv 1 filter: 7 × 7 × 3 —- seven-by-seven patch, three layers deep.
 The filter slides across the picture.
 At every (y, x) location it multiplies its own 7×7×3 numbers with the 7×7×3 block of pixels underneath, sums them, adds a bias → outputs one single number at (y, x) in its personal result page.
-Hence for c filters (7 * 7 * k), and an image (w * h * k), the result is (c * h * w)
+Hence for c filters each of size (f * f * k), and an image (k * h * w), the output is (c * h_out * w_out) where h_out = floor((h - f + 2*padding) / stride) + 1
 
 Here, the output tensor after this layer: 2 channels × 3 × 3
 ```text
@@ -82,7 +82,7 @@ B_relu = [[0, 0, 0],
 Note: Negatives in B became zeros. This helps us focus on the important features and avoid small shrinking/negative values.
 
 The next step is **Spatial down-sampling**
-The simplest form is to use stride = 2 on a new 2 × 2 filter of ones (acts like averaging + shrink).
+The simplest form is **average pooling**: slide a 2 × 2 window with stride 2 and take the mean of each window (shrinks spatial dims by half).
 That halves height & width.
 Another common form is **Max-pool**: look at a 2 × 2 window, keep the biggest number.
 
@@ -121,20 +121,52 @@ General Neural Net Structure:
 
 | Stage                     | Operation          | How many filters     | Stride          | Output size *(channels × height × width)* |
 | ------------------------- | ------------------ | -------------------- | --------------- | ----------------------------------------- |
-| **Input**                 | —                  | —                    | —               | **3 × 226 × 226**                         |
-| **Conv 1**                | 7 × 7 filter       | 64                   | 2               | 64 × 113 × 113                            |
-| **Max-pool**              | 3 × 3              | —                    | 2               | 64 × 57 × 57                              |
-| **Conv 2 block**          | 3 stacked layers   | 64 → 64 → **256**    | 1               | 256 × 57 × 57                             |
-| **Conv 3 block**          | 4 stacked layers   | 128 → 128 → **512**  | 2 (first layer) | 512 × 29 × 29                             |
-| **Conv 4 block**          | 6 stacked layers   | 256 → 256 → **1024** | 2               | 1024 × 15 × 15                            |
-| **Conv 5 block**          | 3 stacked layers   | 512 → 512 → **2048** | 2               | 2048 × 8 × 8                              |
-| **GAP** (Global-Avg-Pool) | average over 8 × 8 | —                    | —               | **2048 × 1 × 1**                          |
+| **Input**                 | —                  | —                    | —               | **3 × 224 × 224**                         |
+| **Conv 1**                | 7 × 7 filter       | 64                   | 2 (+ pad 3)    | 64 × 112 × 112                            |
+| **Max-pool**              | 3 × 3              | —                    | 2 (+ pad 1)    | 64 × 56 × 56                              |
+| **Conv 2 block**          | 3 bottleneck layers| 64 → 64 → **256**    | 1               | 256 × 56 × 56                             |
+| **Conv 3 block**          | 4 bottleneck layers| 128 → 128 → **512**  | 2 (first layer) | 512 × 28 × 28                             |
+| **Conv 4 block**          | 6 bottleneck layers| 256 → 256 → **1024** | 2               | 1024 × 14 × 14                            |
+| **Conv 5 block**          | 3 bottleneck layers| 512 → 512 → **2048** | 2               | 2048 × 7 × 7                              |
+| **GAP** (Global-Avg-Pool) | average over 7 × 7 | —                    | —               | **2048 × 1 × 1**                          |
 | **Flatten / L2-norm**     | —                  | —                    | —               | **2048-D vector**                         |
 
 Reading the table in plain language
-- Conv 1 (64 × 113 × 113) – 64 edge detectors scan the RGB image; output is 64 grey pages, each 113 × 113 pixels.
-- Max-pool (64 × 57 × 57) – we zoom out; each page loses half its width and height.
+- Conv 1 (64 × 112 × 112) – 64 edge detectors scan the RGB image; output is 64 grey pages, each 112 × 112 pixels.
+- Max-pool (64 × 56 × 56) – we zoom out; each page loses half its width and height.
 - Conv 2 block – tiny filters combine edges into corners/texture patches; 256 pattern pages now.
 - Conv 3/4/5 blocks – keep repeating: zoom out a bit, then add more pattern pages. By the last block each “pixel” covers a big chunk of the original photo, and we have 2048 different pattern types.
-- Global-average-pool squeezes every 8 × 8 page into one number, leaving a tidy 2048-number list that summarises how much each pattern occurred anywhere in the image.
+- Global-average-pool squeezes every 7 × 7 page into one number, leaving a tidy 2048-number list that summarises how much each pattern occurred anywhere in the image.
 - That list is the embedding vector you store and compare with cosine distance.
+
+### Residual (Skip) Connections — What Makes ResNet “Res”Net
+
+The “Res” in ResNet stands for **Residual**. This is the defining innovation.
+
+**The problem:** Very deep CNNs (20+ layers) actually perform *worse* than shallower ones — not because of overfitting, but because gradients vanish during training, making deeper layers unable to learn.
+
+**The fix:** Instead of learning the full output `H(x)`, each block learns the *residual* `F(x) = H(x) - x`, then adds the input back:
+
+```text
+output = F(x) + x       ← the skip connection
+```
+
+Visually:
+```text
+input x ──────────────────────┐
+   │                          │  (skip / shortcut)
+   ▼                          │
+[Conv → BN → ReLU → Conv → BN]  │
+   │                          │
+   ▼                          │
+   + ◄────────────────────────┘
+   │
+  ReLU
+   │
+   ▼
+output
+```
+
+**Why it works:** If a layer has nothing useful to learn, it can simply learn F(x) = 0, making the block a pass-through. This means adding more layers can never hurt — at worst, they learn to do nothing. Gradients also flow directly through the skip connection, solving the vanishing gradient problem.
+
+**Dimension mismatch:** When a block changes the number of channels (e.g., 256 → 512), the skip connection uses a 1×1 convolution to match dimensions before adding.

@@ -1,4 +1,4 @@
-## How do we make Vectors for sentences, paragraphs, documents, vectors?
+## How do we make Vectors for sentences, paragraphs, and documents?
 
 In the previous parts, we saw how word embedding models are trained and used for generating vectors for words.
 There are 4 major techniques of expanding these models to work for sentences, documents, books, etc. 
@@ -61,9 +61,11 @@ where,
 - a — small smoothing constant; keeps weights bounded even for extremely rare words.
 
 Why it exists?
-- TF-IDF can explode for ultra-rare tokens.
-- TF-IDF doesnt do too well when document frequency varies widely.
+- TF-IDF weights can be unstable for very rare tokens in small corpora.
+- TF-IDF doesn't do too well when document frequency varies widely.
 - SIF scales each word by a smooth curve that monotonically down-weights common words without wild jumps.
+
+**Important extra step:** After computing the weighted average, the original SIF paper (Arora et al., 2017) also **removes the first principal component** from all sentence vectors. This subtracts out the "common discourse" direction that all sentences share, making the remaining vectors more discriminative. Without this step, SIF loses much of its advantage over plain weighted averaging.
 
 When to use?
 - You want a one-pass, streaming computation (need only running word frequencies, not per-doc df).
