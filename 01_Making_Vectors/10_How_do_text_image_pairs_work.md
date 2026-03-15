@@ -54,7 +54,7 @@ Unit-length vector	v̂ = (4/13, –3/13, 12/13) ≈ (0.308, –0.231, 0.923)
 ```
 The new vector points in exactly the same direction—only its scale has changed.
 
-5. **Similarity matrix**  
+4. **Similarity matrix**  
    `S = v_I · v_Tᵀ`
 
    |     | **T₀** | **T₁** | **T₂** |
@@ -63,7 +63,7 @@ The new vector points in exactly the same direction—only its scale has changed
    | **I₁** | 0.12 | 0.88 | 0.07 |
    | **I₂** | 0.05 | 0.09 | 0.95 |
 
-6. **Contrastive loss**
+5. **Contrastive loss**
 
    ```
    Loss_row = CE(softmax(row_i), target = i)
@@ -71,7 +71,7 @@ The new vector points in exactly the same direction—only its scale has changed
    Total    = (Loss_row + Loss_col) / 2
    ```
 
-7. **Back-propagate** through *both* encoders – correct pairs climb, wrong pairs sink.
+6. **Back-propagate** through *both* encoders – correct pairs climb, wrong pairs sink.
 
 After millions of batches the encoders share a **joint semantic space**.
 
@@ -117,9 +117,11 @@ img_encoder = ClipImageEncoder()          # pre-trained
 txt_encoder = ClipTextEncoder()
 
 img_vec = img_encoder("tower.jpg")        # shape (512,)
+img_vec = img_vec / img_vec.norm()        # L2 normalize
 txt_vec = txt_encoder("The Eiffel Tower")
+txt_vec = txt_vec / txt_vec.norm()        # L2 normalize
 
-similarity = (img_vec @ txt_vec).item()   # ≈ cosine
+similarity = (img_vec @ txt_vec).item()   # cosine (since both are unit-length)
 print("similarity =", similarity)
 ~~~
 

@@ -1,6 +1,6 @@
 ## How we turn images into a single vector?
 
-The story parallels the procss for text: 
+The story parallels the process for text: 
 - pick or train an encoder, 
 - feed every picture through it once, store the resulting vector in a vector DB, 
 - and compare with cosine distance at query time.
@@ -8,7 +8,7 @@ The story parallels the procss for text:
 
 ### 1 Off-the-shelf CNN pooling (the “simple pooling” analogue)
 
-- Encoder – a convolutional network pre-trained on ImageNet, e.g. ResNet-50.
+- Encoder – a convolutional network (e.g. ResNet-50) or Vision Transformer (ViT) pre-trained on ImageNet.
 - Global Average Pooling – replace the final classification head with a spatial average over the last feature map, giving a fixed-length vector (2048 d for ResNet-50).
 
 #### What global average pooling really does?
@@ -46,18 +46,24 @@ L = max(0, cos(A, N) – cos(A, P) + α);  where α ≈ 0.2
 - Preferred when you can label pairs as “same SKU vs. different SKU”.
 
 
-### Self-supervised contrastive encoders (SimCLR, MoCo, BYOL)
+### Self-supervised encoders (SimCLR, MoCo, BYOL)
 
-- No labels at all. 
+- No labels at all.
 - Create two random augmentations of the same image, by cropping, rotating, zooming in/out, etc.
-- treat them as a positive pair, and use the rest of the batch as negatives. 
 
-Works with the InfoNCE loss
+**Contrastive methods (SimCLR, MoCo):**
+- Treat the two augmentations as a positive pair, and use the rest of the batch as negatives.
+- Work with the InfoNCE loss:
 ```math
-L = – log [exp(cos(v₁, v₂)/τ) / Σ_j exp(cos(v₁, v_j)/τ)]  
+L = – log [exp(cos(v₁, v₂)/τ) / Σ_j exp(cos(v₁, v_j)/τ)]
 ```
 
-- learns a backbone that groups visually similar patterns (texture, shape) even on unlabelled catalog shots.
+**Non-contrastive method (BYOL):**
+- Uses **no negative pairs at all**. Instead, trains a student network to predict the output of a slowly-updating teacher network (exponential moving average of student weights).
+- The two augmentations are both fed through student and teacher, and the student learns to match the teacher's representation.
+- Avoids the need for large batches that contrastive methods require for enough negatives.
+
+- All three learn a backbone that groups visually similar patterns (texture, shape) even on unlabelled catalog shots.
 
 
 ### Labelled vs Unlabelled learning
