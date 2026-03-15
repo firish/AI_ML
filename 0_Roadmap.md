@@ -7,6 +7,18 @@
 
 ---
 
+## Phase 0 — Neural Network Basics (The foundation everything else builds on)
+> Goal: Understand how a neural network learns at all. These concepts are assumed everywhere else.
+
+- [x] 01 — Neurons, layers, and the forward pass (weighted sum, bias, how data flows)
+- [x] 02 — Loss functions: MSE for regression, cross-entropy for classification
+- [x] 03 — Backpropagation and gradient descent (how weights are updated, what a gradient is, Adam/AdamW)
+- [x] 04 — Activation functions (ReLU, sigmoid, softmax, GELU — and why non-linearity matters)
+- [x] 05 — BatchNorm vs LayerNorm (why transformers use LayerNorm, what normalisation does)
+- [x] 06 — Overfitting, dropout, regularisation, early stopping
+
+---
+
 ## Phase 1 — Making Vectors (How models turn things into numbers)
 > Goal: Understand how text, documents, and images become fixed-length vectors.
 
