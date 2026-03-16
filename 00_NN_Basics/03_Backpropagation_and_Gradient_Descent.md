@@ -181,15 +181,36 @@ In a real framework (PyTorch, TensorFlow), you never write this manually — `lo
 
 ## Mini-batch Gradient Descent
 
-Computing the exact gradient requires looking at ALL training examples — expensive. In practice:
+Computing the exact gradient requires looking at ALL training examples — expensive. In practice, we pick a small random batch and **average the gradients** across it.
 
-| Variant | What it computes gradient over | Pro | Con |
-|---------|-------------------------------|-----|-----|
-| Batch GD | Whole dataset | Stable, exact | Very slow per step |
-| Stochastic GD (SGD) | 1 random example | Fast per step | Noisy, unstable |
-| **Mini-batch GD** | 32-512 random examples | Best of both | Standard in practice |
+### How It Works
 
-Mini-batch size is typically 32, 64, 128, or 256 — a tunable hyperparameter.
+Say we pick a mini-batch of 4 examples. Each example produces its own gradient for every weight:
+
+```text
+Example 1: forward pass → loss = 1.2 → backward pass → dL/dw1 = +3.0
+Example 2: forward pass → loss = 0.4 → backward pass → dL/dw1 = -1.0
+Example 3: forward pass → loss = 0.9 → backward pass → dL/dw1 = +2.0
+Example 4: forward pass → loss = 0.7 → backward pass → dL/dw1 = +0.4
+
+Average gradient for w1 = (3.0 + (-1.0) + 2.0 + 0.4) / 4 = +1.1
+
+Update: w1_new = w1 - lr * 1.1
+```
+
+That's it — **average the gradients, then do one update**. The same average is computed for every weight in the network, and they all get updated together.
+
+Why average instead of using just one example? One example might be an outlier that pushes the weight in a weird direction. Averaging over 32-128 examples smooths out the noise and gives a more reliable direction.
+
+### The Variants
+
+| Variant | Gradient computed over | Pro | Con |
+|---------|----------------------|-----|-----|
+| Batch GD | All N training examples | Most stable direction | Very slow — must process entire dataset before one update |
+| Stochastic GD (SGD) | 1 random example | Fastest per step | Very noisy — one outlier can send weights the wrong way |
+| **Mini-batch GD** | 32-512 random examples | Smooth enough, fast enough | Standard in practice |
+
+Mini-batch size is typically 32, 64, 128, or 256. Larger batch = smoother gradient but more compute per step.
 
 ---
 
