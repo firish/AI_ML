@@ -110,70 +110,125 @@ while looking at what the encoder understood.
 
 ### Cross-Attention: The Bridge
 
+The core problem: the decoder is generating tokens one at a time, but it needs to "consult" the encoder's understanding of the input at every step. Cross-attention is the mechanism that makes this consultation possible.
+
+Think about what the decoder needs when generating "Le chat assis" from "The cat sat." When it's about to produce the third French word, it needs to know: *what was the third English concept?* It can't just rely on its own previous tokens ("Le chat") — it needs to reach back into the encoder's representation of the English input and pull out the relevant information. Cross-attention is that reach.
+
 The decoder has an **extra** attention layer that encoder-only and decoder-only models don't have:
 
 ```text
 A decoder block in an encoder-decoder model has THREE sub-layers:
 
-    1. Causal self-attention     (decoder attends to its own previous tokens)
+    1. Causal self-attention     (decoder looks at its own past tokens)
     2. Cross-attention           [UNIQUE to encoder-decoder]
     3. Feed-forward network
 
-Cross-attention:
-    Q = from decoder (what the decoder is looking for)
-    K = from encoder (what the input contains)
-    V = from encoder (the information to retrieve)
+How cross-attention works:
+    Q = from the decoder    (a query: "what am I looking for right now?")
+    K = from the encoder    (keys: "here's what each input token contains")
+    V = from the encoder    (values: "here's the actual information to retrieve")
 
-    The decoder QUERIES the encoder's output.
-    "I'm about to generate the next French word — what part of the
-     English input should I pay attention to?"
+    The decoder fires a query into the encoder's output bank.
+    The encoder tokens that best match the query get the most weight.
+    The output is a weighted blend of encoder information — focused on
+    whichever part of the input is most relevant at this generation step.
 ```
 
-**Toy example: translating "The cat sat" → "Le chat assis"**
+**Toy example: generating "assis" (French for "sat") when translating "The cat sat"**
 
 ```text
-Encoder output (3 vectors, one per English token):
-    h_The  = [0.10, 0.82, -0.34]
-    h_cat  = [0.75, -0.20, 0.15]
-    h_sat  = [-0.30, 0.10, 0.90]
+Setup:
+    Encoder output (3 vectors, computed once, reused at every decoder step):
+        h_The  = [0.10, 0.82, -0.34]
+        h_cat  = [0.75, -0.20, 0.15]
+        h_sat  = [-0.30, 0.10, 0.90]
 
-Decoder is generating token 3 ("assis").
-It has already generated: "<BOS> Le chat"
+    Decoder has already generated: "<BOS> Le chat"
+    Now it needs to produce the third token ("assis").
 
-Step 1: Causal self-attention
-    "assis" position attends to <BOS>, Le, chat (not future tokens)
-    → decoder_vec = [0.45, -0.12, 0.68]
+Step 1: Causal self-attention (decoder looks at its own tokens)
+    The "assis" position attends to <BOS>, Le, chat (causal — no peeking right)
+    → this produces a decoder vector: d = [0.45, -0.12, 0.68]
+    → interpretation: "I've generated 'Le chat' so far. I need a verb next."
 
-Step 2: Cross-attention
-    Q = decoder_vec × W_Q = [0.50, -0.10, 0.70]     (what am I looking for?)
-    K = encoder outputs × W_K                          (what does the input offer?)
-    V = encoder outputs × W_V                          (the actual information)
+Step 2: Cross-attention (decoder queries the encoder)
+    Q = d × W_Q = [0.50, -0.10, 0.70]     ← the decoder's question
+    K = encoder outputs × W_K               ← what each input token "offers"
+    V = encoder outputs × W_V               ← the information to actually retrieve
 
-    Attention scores (Q · K):
-        score(The) = 0.15   (low — "assis" doesn't need "The")
-        score(cat) = 0.20   (low — "assis" is about sitting, not the cat itself)
-        score(sat) = 0.85   (high! — "assis" is the French translation of "sat")
+    Dot-product scores (Q · K for each encoder token):
+        score(The) = 0.15   — low, "assis" doesn't need the article
+        score(cat) = 0.20   — low, "assis" is about the action, not the noun
+        score(sat) = 0.85   — HIGH: "assis" is the French translation of "sat"
 
-    After softmax:
+    After softmax (scores → weights that sum to 1):
         weight(The) = 0.08
         weight(cat) = 0.10
-        weight(sat) = 0.82    ← decoder focuses on "sat"
+        weight(sat) = 0.82   ← decoder concentrates attention on "sat"
 
     Output = 0.08 × V_The + 0.10 × V_cat + 0.82 × V_sat
-    → enriched decoder vector that "knows" it should translate "sat"
+    → an enriched vector that has pulled the meaning of "sat" from the encoder
 
-Step 3: FFN → prediction head → predict next token
+Step 3: FFN → prediction head → predict "assis" ✓
 ```
 
-Cross-attention is what makes encoder-decoder models great for tasks where the output is a **transformation** of the input — translation, summarization, question answering where the answer comes from a given passage.
+Why this is powerful: the decoder doesn't have to memorize where in the input the relevant information lives. Cross-attention learns a soft alignment — "when generating this output token, look at these input tokens." That's what makes translation work even when word order differs between languages, or when one output word corresponds to multiple input words. Cross-attention is what makes encoder-decoder models the right tool when the output is a structured **transformation** of the input — translation, summarization, question answering from a given passage.
 
 ### Training Game
 
-```text
-Depends on the specific model:
+The training game for encoder-decoder models is called **teacher forcing**. Understanding why it works — and why it's designed this way — makes the whole training procedure click.
 
-T5 (Text-to-Text Transfer Transformer):
-    Everything is framed as "text in → text out":
+**The naive approach (and why it fails):** You might think training should look like inference: feed the encoder the input, let the decoder generate token 1, feed that back in to generate token 2, and so on. The problem is that early in training, the decoder's predictions are terrible. If it predicts the wrong token at step 1, then step 2 gets wrong input, step 3 gets even more wrong input — errors cascade. The gradient signal becomes impossibly noisy.
+
+**Teacher forcing — the actual approach:** Instead of feeding the decoder its own (wrong) predictions, you feed it the *correct* previous tokens at every step. You already know the target sequence, so use it.
+
+Concrete example: translating "The cat sat" → "Le chat assis"
+
+```text
+You have the correct target: ["Le", "chat", "assis", "<EOS>"]
+
+During training, you feed the decoder: ["<BOS>", "Le", "chat", "assis"]
+                                           ↑
+                              (the target shifted right by one position)
+
+The decoder predicts at EVERY position simultaneously (just like how the
+causal mask works in decoder-only models):
+
+    Position 0 sees: "<BOS>"                 → should predict "Le"
+    Position 1 sees: "<BOS> Le"              → should predict "chat"
+    Position 2 sees: "<BOS> Le chat"         → should predict "assis"
+    Position 3 sees: "<BOS> Le chat assis"   → should predict "<EOS>"
+
+At every position, the decoder also queries the encoder output via
+cross-attention — so it can look at "The cat sat" while generating each word.
+
+One training pair gives you 4 prediction tasks in a single forward pass.
+```
+
+**How the loss is computed:** At each position, the model produces a probability distribution over the entire vocabulary. Cross-entropy loss measures how surprised the model was by the correct answer.
+
+```text
+Position 0: model predicts P("Le") = 0.65  — correct answer is "Le"
+            → not very surprised → lower loss
+
+Position 1: model predicts P("chat") = 0.08 — correct answer is "chat"
+            → very surprised → higher loss (cross-attention hasn't learned
+               to focus on "cat" yet)
+
+Position 2: model predicts P("assis") = 0.42 — correct answer is "assis"
+            → moderately surprised → medium loss
+
+Average the loss across all 4 positions → backpropagate → adjust:
+    - encoder weights (how it encodes English)
+    - decoder weights (how it attends to its own tokens)
+    - cross-attention weights (which encoder tokens to look at, and when)
+    - embeddings, prediction head — everything
+```
+
+**Why teacher forcing instead of the model's own predictions:** Clean gradients. If position 1 gets the correct "Le" as context (not the model's wrong guess "Un"), then the gradient for position 2 is based on realistic input — the model learns what to do given correct context. Over millions of examples, this produces a model that, at inference time, can handle its own (now much better) predictions without cascading failures.
+
+```text
+T5 (Text-to-Text Transfer Transformer) — frames everything as text-in → text-out:
     Input:  "translate English to French: The cat sat"
     Target: "Le chat assis"
 
@@ -183,14 +238,17 @@ T5 (Text-to-Text Transfer Transformer):
     Input:  "question: What color is the sky? context: The sky is blue."
     Target: "blue"
 
-    Trained with teacher forcing: at each decoder step, feed the CORRECT
-    previous token (not the model's prediction). Loss = cross-entropy
-    on the target tokens.
+    Same teacher forcing + cross-entropy loss for all tasks. One training recipe
+    works for translation, summarization, Q&A, classification — just change the
+    input prefix.
 
-BART:
-    Pre-trained by corrupting text (mask, delete, shuffle, rotate)
-    then reconstructing the original.
-    Encoder reads the corrupted version, decoder generates the clean version.
+BART — trained by corrupting text, then reconstructing it:
+    Encoder input:  "The [MASK] sat"   (corrupted version)
+    Decoder target: "The cat sat"      (original, clean version)
+
+    The encoder learns to understand damaged text.
+    The decoder learns to reconstruct it.
+    Fine-tune BART afterward for summarization or translation.
 ```
 
 ---
