@@ -81,6 +81,28 @@ n e w e r _   (appears 3 times — from "newer" × 3)
 w i d e r _   (appears 2 times — from "wider" × 2)
 
 Initial vocabulary: {l, o, w, e, s, t, n, r, i, d, _}  (11 tokens)
+
+What is the "_" for?
+    It's a word-boundary marker. We add it during pre-tokenization
+    so BPE knows where spaces were in the original text.
+
+    Without it, BPE can't tell the difference between:
+        "low" as a standalone word    → l o w _
+        "low" inside "flower"         → ... l o w e r ...
+
+    The "_" prevents the standalone "low" from merging with
+    characters that belong to the next word.
+
+    NOT every token in the final vocabulary ends with "_".
+    The vocabulary contains all types of pieces:
+        "low_"  → a complete word (has the end marker)
+        "er_"   → a word ending (suffix + boundary)
+        "low"   → a beginning or middle piece (no boundary)
+        "er"    → a piece that could appear anywhere
+        "e"     → a single character
+
+    Tokens with "_" can only match at the END of a word.
+    Tokens without "_" can match anywhere inside a word.
 ```
 
 **Step 1: Find the most frequent adjacent pair**
@@ -181,11 +203,293 @@ This is why "lowest" gets tokenized as [low, est] and not [lowe, st]:
 the merges were learned in frequency order, and "low" was merged before "est".
 ```
 
+**"But with 32K merges, does it replay all 32K rules for every word?"**
+
+```text
+No. The merge rules are stored in a lookup table (hash map), not a list
+you scan through one by one.
+
+What gets saved after training:
+    {
+        ("l", "o")   → priority 1,      (learned first = highest priority)
+        ("lo", "w")  → priority 2,
+        ("e", "r")   → priority 3,
+        ("er", "_")  → priority 4,
+        ("low", "_") → priority 5,
+        ...
+        ("th", "e")  → priority 8,042,
+        ("es", "t")  → priority 12,500,
+        ...
+    }
+    A hash map with 32,000 entries. Looking up any pair is instant.
+
+How tokenization actually works for "lowest":
+
+    1. Split: [l, o, w, e, s, t]
+
+    2. Check ALL adjacent pairs against the hash map:
+         (l, o)  → found! priority 1
+         (o, w)  → found! priority 47
+         (w, e)  → found! priority 3,200
+         (e, s)  → found! priority 12,500
+         (s, t)  → found! priority 5,001
+       That's 5 lookups, not 32,000.
+
+    3. Apply the pair with the LOWEST priority number (= learned earliest):
+         (l, o) → "lo"    →  [lo, w, e, s, t]
+
+    4. Only re-check the pairs AFFECTED by this merge:
+         (lo, w) → found! priority 2     ← new pair created by the merge
+         (w, e)  → still priority 3,200  ← unchanged
+         (no need to re-check (e,s) or (s,t) — they weren't affected)
+
+    5. Apply lowest: (lo, w) → "low"  →  [low, e, s, t]
+
+    6. Repeat until no adjacent pair exists in the hash map.
+
+    For a 6-character word: ~5 lookups per round, ~4 rounds = ~20 lookups.
+    NOT 32,000 sequential scans.
+
+This is why tokenization is essentially instant — even with a 128K vocabulary.
+```
+
 ---
 
 ## Byte-Level BPE (GPT-2 and onward)
 
-Standard BPE operates on characters. But what counts as a "character"? Accents, Chinese characters, emoji — the Unicode space is huge.
+Standard BPE operates on characters. But what counts as a "character"? Accents, Chinese characters, emoji — the Unicode space is huge. To understand how byte-level BPE solves this, you need to know what Unicode and UTF-8 are.
+
+### Quick Refresher: Unicode and UTF-8
+
+```text
+The problem: computers store numbers, not letters.
+We need a system that says "number 65 = the letter A."
+
+PHASE 1 — ASCII (1960s):
+    Assigns numbers 0-127 to English characters.
+        65 = 'A'    97 = 'a'    48 = '0'    32 = ' '    10 = newline
+
+    Each character fits in 1 byte (8 bits, values 0-255).
+    Works great for English. Useless for everything else.
+
+PHASE 2 — Unicode (1991):
+    One giant table that assigns a number to EVERY character
+    in EVERY language (plus symbols, emoji, ancient scripts, etc.)
+
+    These numbers are called "code points."
+    Unicode currently defines ~150,000 characters.
+
+    But Unicode is just the TABLE — it says '猫' = number 29,483.
+    It doesn't say how to store that number as bytes in memory.
+    That's where encoding comes in.
+```
+
+### Hex Crash Course (needed for everything below)
+
+```text
+Why hex? Computers work in bytes. 1 byte = 8 bits = values 0-255.
+Decimal is clunky for bytes: "195" doesn't tell you anything about bits.
+Hex is compact: each hex digit = exactly 4 bits, so 1 byte = exactly 2 hex digits.
+
+How hex works:
+    Decimal counts:  0  1  2  3  4  5  6  7  8  9  10  11  12  13  14  15  16  17 ...
+    Hex counts:      0  1  2  3  4  5  6  7  8  9   A   B   C   D   E   F  10  11 ...
+
+    After 9, hex uses A-F for 10-15. Then 10 in hex = 16 in decimal.
+
+Converting decimal → hex (just divide by 16 repeatedly):
+
+    Example: 233 → hex
+        233 ÷ 16 = 14 remainder 9
+                    14 = E, 9 = 9
+        → 0xE9
+
+    Example: 29,483 → hex
+        29,483 ÷ 16 = 1,842 remainder 11 (B)
+         1,842 ÷ 16 =   115 remainder  2
+           115 ÷ 16 =     7 remainder  3
+             7 ÷ 16 =     0 remainder  7
+        Read remainders bottom-up: 7, 3, 2, B → 0x732B
+
+You don't need to memorise this. Just know:
+    - "0x" or "U+" prefix means "the following digits are hex"
+    - Each hex digit = 4 bits, two hex digits = 1 byte
+    - U+0041 and 0x41 and 65 decimal are all the same number
+```
+
+### Unicode Code Points — The Lookup Table
+
+```text
+Unicode is just a giant agreed-upon table:
+
+    Number (decimal)  │  Hex (U+ notation)  │  Character
+    ──────────────────┼─────────────────────┼───────────
+    65                │  U+0041             │  A
+    97                │  U+0061             │  a
+    233               │  U+00E9             │  é
+    29,483            │  U+732B             │  猫
+    128,049           │  U+1F431            │  🐱
+
+That's it. Unicode says "character number 29,483 is 猫."
+Written in hex: U+732B (because 29,483 in hex = 732B).
+
+The U+ notation just means "Unicode code point, written in hex."
+It's the same number, different notation.
+The table goes up to U+10FFFF (= 1,114,111 in decimal).
+```
+
+### UTF-8 — How to Store Code Points as Bytes
+
+```text
+The problem:
+    Unicode gives every character a number. But how do you store it?
+
+    'A' = 65. Easy — fits in 1 byte.
+    '猫' = 29,483. Doesn't fit in 1 byte (max 255). Needs multiple bytes.
+    '🐱' = 128,049. Even bigger.
+
+    Option A — Fixed width: always use 4 bytes per character.
+        Simple, but "hello" = 20 bytes instead of 5. Wasteful.
+
+    Option B — UTF-8: variable width.
+        Small numbers → fewer bytes. Big numbers → more bytes.
+        This is what the world actually uses (~98% of web pages).
+```
+
+```text
+UTF-8 ENCODING RULES:
+
+    UTF-8 uses templates. Based on how big the code point number is,
+    pick a template, stuff the binary bits into the x slots:
+
+    Code point range          │ Template (binary)              │ Bytes │ Data bits
+    ──────────────────────────┼────────────────────────────────┼───────┼──────────
+    0 – 127                   │ 0xxxxxxx                      │   1   │   7
+    128 – 2,047               │ 110xxxxx  10xxxxxx            │   2   │  11
+    2,048 – 65,535            │ 1110xxxx  10xxxxxx  10xxxxxx  │   3   │  16
+    65,536 – 1,114,111        │ 11110xxx  10xxxxxx  10xxxxxx  10xxxxxx │ 4 │ 21
+
+    The non-x bits are MARKERS:
+        0_______ = "I'm a 1-byte character"
+        110_____ = "I'm the START of a 2-byte character"
+        1110____ = "I'm the START of a 3-byte character"
+        11110___ = "I'm the START of a 4-byte character"
+        10______ = "I'm a CONTINUATION byte (not a start)"
+
+    These markers are how a computer reading bytes knows where
+    one character ends and the next begins.
+```
+
+### Complete Example 1: Encoding 'é'
+
+```text
+Step 1: look up the code point
+    'é' = U+00E9 = 233 in decimal
+
+Step 2: which range?
+    233 is in range 128–2,047 → use the 2-byte template
+    Template: 110xxxxx  10xxxxxx   (11 data bit slots)
+
+Step 3: convert 233 to binary
+    233 = 128 + 64 + 32 + 8 + 1
+        = 11101001 in binary (8 bits)
+    Pad to 11 bits: 00011101001
+
+Step 4: stuff the bits into the template
+    Template:   110xxxxx   10xxxxxx
+    Data bits:     00011     101001
+    Result:     11000011   10101001
+
+Step 5: convert each byte to decimal
+    11000011 = 128+64+0+0+0+0+2+1 = 195
+    10101001 = 128+0+32+0+8+0+0+1 = 169
+
+RESULT: 'é' → UTF-8 bytes [195, 169]
+
+    Verify: these are the bytes a computer stores when you type 'é'.
+    Two bytes for one character.
+```
+
+### Complete Example 2: Encoding '猫'
+
+```text
+Step 1: look up the code point
+    '猫' = U+732B = 29,483 in decimal
+
+Step 2: which range?
+    29,483 is in range 2,048–65,535 → use the 3-byte template
+    Template: 1110xxxx  10xxxxxx  10xxxxxx   (16 data bit slots)
+
+Step 3: convert 29,483 to binary
+    29,483 = 0111 0011 0010 1011  (16 bits)
+
+Step 4: stuff the bits into the template
+    Template:   1110xxxx   10xxxxxx   10xxxxxx
+    Data bits:      0111     001100     101011
+    Result:     11100111   10001100   10101011
+
+Step 5: convert each byte to decimal
+    11100111 = 231
+    10001100 = 140
+    10101011 = 171
+
+RESULT: '猫' → UTF-8 bytes [231, 140, 171]
+
+    Three bytes for one character.
+```
+
+### Complete Example 3: Encoding '🐱'
+
+```text
+Step 1: look up the code point
+    '🐱' = U+1F431 = 128,049 in decimal
+
+Step 2: which range?
+    128,049 is in range 65,536–1,114,111 → use the 4-byte template
+    Template: 11110xxx  10xxxxxx  10xxxxxx  10xxxxxx   (21 data bit slots)
+
+Step 3: convert 128,049 to binary
+    128,049 = 0 00011 111010 000110 001  (padded to 21 bits)
+    Let me regroup: 000 011111 010000 110001
+
+Step 4: stuff the bits into the template
+    Template:   11110xxx   10xxxxxx   10xxxxxx   10xxxxxx
+    Data bits:       000     011111     010000     110001
+    Result:     11110000   10011111   10010000   10110001
+
+Step 5: convert each byte to decimal
+    11110000 = 240
+    10011111 = 159
+    10010000 = 144
+    10110001 = 177
+
+RESULT: '🐱' → UTF-8 bytes [240, 159, 144, 177]
+
+    Four bytes for one emoji.
+```
+
+### The Summary So Far
+
+```text
+Character → Unicode table → code point number → UTF-8 template → bytes
+
+    'A'  → U+0041 →     65 → [65]                     (1 byte)
+    'é'  → U+00E9 →    233 → [195, 169]               (2 bytes)
+    '猫' → U+732B → 29,483 → [231, 140, 171]          (3 bytes)
+    '🐱' → U+1F431→128,049 → [240, 159, 144, 177]     (4 bytes)
+
+    English is cheap (1 byte/char). Emoji is expensive (4 bytes/char).
+    But EVERYTHING is representable — no character is ever "unknown."
+
+Why this matters for tokenization:
+    These byte values (65, 195, 169, 231, ...) are what byte-level BPE
+    uses as its starting vocabulary. Every possible text becomes a
+    sequence of numbers 0-255, and BPE merges build up from there.
+```
+
+### Now Back to Byte-Level BPE
+
+With that context, the jump to byte-level BPE is simple:
 
 **Byte-level BPE** starts with **bytes** (0-255) instead of characters:
 
@@ -197,16 +501,22 @@ Byte-level BPE base vocabulary: all single bytes (256)
     Every possible text can be represented as a sequence of bytes.
     No "unknown token" is ever needed.
 
-"café" in bytes:  [99, 97, 102, 195, 169]     (UTF-8 encoding)
-"猫"   in bytes:  [231, 140, 171]              (UTF-8 encoding)
-"🐱"   in bytes:  [240, 159, 144, 177]         (UTF-8 encoding)
+Trace through the UTF-8 bytes from above:
+
+"café" in bytes:  [99, 97, 102, 195, 169]     ← 'c','a','f' are 1 byte each
+                                                   'é' is 2 bytes (195, 169)
+"猫"   in bytes:  [231, 140, 171]              ← 3 bytes (CJK range)
+"🐱"   in bytes:  [240, 159, 144, 177]         ← 4 bytes (emoji range)
 
 Then BPE merges operate on these bytes → common byte sequences become tokens.
-Frequent English words get merged into single tokens.
-Rare scripts stay as byte sequences (more tokens, but never unknown).
+Frequent English words get merged into single tokens:
+    "the" → bytes [116, 104, 101] → merged into one token early on
+Rare scripts stay as byte sequences (more tokens, but never unknown):
+    "猫" → bytes [231, 140, 171] → might stay as 3 separate byte tokens,
+    or if Chinese is common in training data, the 3 bytes get merged into one token
 ```
 
-This is why GPT can handle any language, emoji, or even binary data — at the byte level, everything is representable.
+This is why GPT can handle any language, emoji, or even binary data — at the byte level, everything is representable. The 256-byte base vocabulary is tiny and universal, and BPE merges build up from there based on what's frequent in the training data.
 
 ---
 
