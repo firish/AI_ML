@@ -60,6 +60,77 @@ The question is: **how do you pick one token from these 50,257 probabilities?** 
 
 ---
 
+### What "Sample from This Distribution" Actually Means
+
+The sampling strategies below all end with "sample from the distribution." Here is what that means concretely.
+
+```text
+Sampling = rolling a weighted die.
+
+After temperature scaling or top-k/top-p filtering gives you a
+probability distribution, you randomly pick ONE token where each
+token's probability is its chance of being selected.
+
+Say after filtering you have:
+    P("cat")  = 0.50
+    P("dog")  = 0.30
+    P("bird") = 0.15
+    P("fish") = 0.05
+
+This is a weighted die with 4 faces:
+    ┌──────────────────────────────────────────────┐
+    │  cat          dog       bird   fish           │
+    │ ██████████  ██████    ███     █               │
+    │   50%         30%      15%    5%              │
+    └──────────────────────────────────────────────┘
+
+Roll the die → land on one token.
+50% of the time you get "cat", 30% "dog", etc.
+
+In code, it's literally one line:
+
+    import random
+    tokens = ["cat", "dog", "bird", "fish"]
+    probs  = [0.50,  0.30,  0.15,   0.05]
+    next_token = random.choices(tokens, weights=probs, k=1)[0]
+
+That's it. It's a random weighted selection. Nothing fancier.
+```
+
+```text
+This is how temperature and top-k/top-p interact with sampling:
+
+    Raw logits  →  temperature scaling  →  top-k/top-p filtering  →  SAMPLE
+    [4.8, 3.9, ...]   (sharpen/flatten)     (cut the tail off)      (roll the die)
+
+    Temperature changes the SHAPE of the die (how lopsided it is).
+    Top-k/top-p changes how many FACES the die has.
+    Sampling is the actual roll.
+```
+
+```text
+Why this matters:
+
+    Every single token in a response is a SEPARATE roll of this die.
+
+    A 200-token response = 200 independent random selections,
+    each conditioned on everything that came before.
+
+    Token 1: roll die → "The"
+    Token 2: (given "The") new die → roll → "capital"
+    Token 3: (given "The capital") new die → roll → "of"
+    ...
+
+    Each roll creates a new context, which creates a new die
+    (new probability distribution), which gets rolled again.
+
+    This is why the same prompt gives different outputs.
+    It's not a bug — it's 200 coin flips in sequence.
+    One different flip early on → completely different response.
+```
+
+---
+
 ## Sampling Strategies
 
 ### 1. Greedy Decoding

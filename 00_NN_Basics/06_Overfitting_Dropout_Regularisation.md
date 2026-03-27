@@ -79,12 +79,66 @@ After dropout:               [0.5, 0.0, -0.3, 0.0, 0.6, -1.1]
 
 **Why this helps:** The network can't rely on any single neuron always being there. It's forced to learn redundant, distributed representations — multiple paths to the same answer. This makes it more robust and less likely to memorise.
 
-**Important:** Dropout is only active during *training*. At inference time, all neurons are active, and their outputs are scaled down by (1 - dropout_rate) to compensate.
+**Important:** Dropout is only active during *training*. At inference time, all neurons are active, and their outputs are scaled by (1 - dropout_rate) to compensate. (Some implementations instead scale UP during training by 1/(1-rate) so inference needs no change — called "inverted dropout." Same effect.)
 
 ```text
 Typical dropout rates:
   - 0.1–0.2 for transformers (light regularisation)
   - 0.5 for dense layers in older classifiers
+
+Why 0.1 for transformers and not 0.5?
+    Transformers are more sensitive than simple dense networks.
+    0.5 dropout destroys too much information flowing through
+    attention — the attention scores and residual stream carry
+    tightly coupled information across all positions.
+    0.1 is enough to regularize without crippling the model.
+```
+
+### Where Exactly Dropout Is Applied in a Transformer
+
+```text
+Dropout appears at THREE specific places in each transformer block:
+
+1. ATTENTION DROPOUT (after softmax, before multiplying by V):
+
+    scores = softmax(Q · Kᵀ / √d)
+    scores = dropout(scores)        ← here: randomly zero out some attention weights
+    output = scores × V
+
+    Effect: the model can't rely on always attending to the same position.
+    It must learn redundant attention patterns.
+
+    Example with dropout rate 0.1:
+        Before: [0.58, 0.30, 0.12]
+        After:  [0.58, 0.00, 0.12]  ← killed one weight
+        Rescale: [0.64, 0.00, 0.13] ← remaining scaled up by 1/0.9
+
+2. RESIDUAL DROPOUT (after each sub-layer, before the residual add):
+
+    sublayer_out = MultiHeadAttention(x)   or   FFN(x)
+    sublayer_out = dropout(sublayer_out)    ← here
+    output = LayerNorm(x + sublayer_out)
+
+    Effect: randomly zeros some dimensions of the sub-layer output
+    before it gets added back to the residual stream.
+    Forces the residual stream to not over-depend on any single sub-layer.
+
+3. EMBEDDING DROPOUT (after the embedding + position encoding):
+
+    embedded = token_embedding + position_embedding
+    embedded = dropout(embedded)    ← here
+    → feeds into first transformer block
+
+    Effect: randomly zeros some dimensions of the input embeddings.
+    Forces the model to not rely on any single embedding dimension.
+
+All three use the SAME dropout rate (typically 0.1).
+All three are OFF during inference.
+
+GPT-1 example:
+    "We used residual, embedding, and attention dropouts with a rate
+     of 0.1 for regularization."
+    That's these three locations, all at 0.1.
 ```
 
 ---
