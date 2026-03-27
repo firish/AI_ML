@@ -281,22 +281,78 @@ The pre-trained model processes ONE contiguous sequence. But many tasks have str
     Question: "What happened to the weather?"
     Answers: A) "It got sunny"  B) "A storm arrived"  C) "Snow fell"
 
-    Create a SEPARATE sequence for each answer option:
+Why can't we just do classification (768 → 3)?
+    Classification works when the classes are FIXED and KNOWN ahead of time
+    (e.g., always "positive" or "negative"). But multiple-choice answers
+    are DIFFERENT for every question. The model needs to READ each answer
+    option and judge whether it fits the context. You can't hardcode
+    "A storm arrived" as class index 1 — it's a different answer every time.
 
-    [Start] context... [Delim] question $ It got sunny [Extract]
-        → Transformer → h_A → W_task (768 → 1) → score_A = 0.3
+    So instead of asking "which class?", we ask a simpler question
+    for each option: "how well does THIS answer fit?" — a single score.
 
-    [Start] context... [Delim] question $ A storm arrived [Extract]
-        → Transformer → h_B → W_task (768 → 1) → score_B = 2.1
+The approach: score each option separately, then compare.
 
-    [Start] context... [Delim] question $ Snow fell [Extract]
-        → Transformer → h_C → W_task (768 → 1) → score_C = 0.7
+    Step 1: Build a separate input sequence per answer option.
+            Each sequence contains the SAME context + question,
+            but a DIFFERENT answer glued on the end.
 
-    softmax([0.3, 2.1, 0.7]) = [0.10, 0.62, 0.28]
-                                       ↑ B wins (correct)
+        Option A: [Start] The sky turned dark and rain began to fall
+                  [Delim] What happened to the weather? $ It got sunny [Extract]
 
-    Note: W_task maps 768 → 1 (just a score per option).
-    The softmax is ACROSS answers, not within one answer.
+        Option B: [Start] The sky turned dark and rain began to fall
+                  [Delim] What happened to the weather? $ A storm arrived [Extract]
+
+        Option C: [Start] The sky turned dark and rain began to fall
+                  [Delim] What happened to the weather? $ Snow fell [Extract]
+
+        The $ symbol is just a separator between question and answer
+        (part of the input formatting, not a special token).
+
+    Step 2: Run EACH sequence through the SAME transformer (3 forward passes).
+            Extract the hidden vector at [Extract] from each:
+
+        Option A → h_A = [0.12, -0.45, 0.88, ..., 0.33]   (768-dim)
+        Option B → h_B = [0.67, -0.11, 0.52, ..., 0.91]   (768-dim)
+        Option C → h_C = [0.34, -0.28, 0.71, ..., 0.55]   (768-dim)
+
+        Each hidden vector encodes: "the transformer read the context,
+        the question, AND this specific answer together."
+        h_B encodes the fact that "a storm arrived" fits naturally
+        after "the sky turned dark and rain began to fall."
+
+    Step 3: W_task maps each 768-dim vector to a SINGLE number (768 → 1).
+            This is just a dot product — "how good is this option?"
+
+        score_A = h_A × W_task = 0.3    (low — bad fit)
+        score_B = h_B × W_task = 2.1    (high — good fit)
+        score_C = h_C × W_task = 0.7    (medium — okay fit)
+
+        W_task is a vector of 768 weights. It learns:
+        "when these dimensions are high, the answer fits the context."
+        It's the SAME W_task applied to all three options.
+
+    Step 4: Softmax ACROSS the three scores to get probabilities.
+
+        softmax([0.3, 2.1, 0.7]) = [0.10, 0.62, 0.28]
+                                           ↑ B wins (correct)
+
+        Then cross-entropy loss against the true label (B).
+
+Why 768 → 1 and not 768 → 3?
+    Because the NUMBER of answer options can vary between questions.
+    Some questions have 2 options, some have 4, some have 5.
+    By scoring each option independently (768 → 1), the same W_task
+    works regardless of how many options there are.
+
+    Compare:
+        Classification (sentiment):  768 → 2  (always 2 classes)
+        Entailment:                  768 → 3  (always 3 classes)
+        Multiple choice:             768 → 1  (per option, any number of options)
+
+Cost: 3 answer options = 3 forward passes through the transformer.
+    This is 3× slower than classification (which needs just 1 pass).
+    But there's no other way — the model must READ each answer to judge it.
 ```
 
 ---
