@@ -659,44 +659,224 @@ The model learns what these tokens mean during training — `<EOS>` means "stop 
 
 ## The Tokenization Pipeline (Full Example)
 
-Let's trace "I don't like ChatGPT's tokenizer!" through GPT-2's tokenizer:
+Let's trace **"I love cats 🐱 and café ☕!"** through GPT-2's byte-level BPE tokenizer, step by step, skipping nothing.
+
+### Step 1: Unicode Lookup
 
 ```text
-Step 1: Pre-tokenization (split on whitespace and punctuation boundaries)
-    → ["I", " don", "'t", " like", " Chat", "G", "PT", "'s", " token", "izer", "!"]
+Every character in the string has a Unicode code point:
 
-    Note: spaces are attached to the NEXT word (" don", " like", " Chat")
-    This is GPT-2's convention — spaces are part of the token.
+    Character │ Code point │ Decimal  │ Type
+    ──────────┼────────────┼──────────┼─────────────
+    'I'       │ U+0049     │       73 │ ASCII
+    ' '       │ U+0020     │       32 │ ASCII
+    'l'       │ U+006C     │      108 │ ASCII
+    'o'       │ U+006F     │      111 │ ASCII
+    'v'       │ U+0076     │      118 │ ASCII
+    'e'       │ U+0065     │      101 │ ASCII
+    ' '       │ U+0020     │       32 │ ASCII
+    'c'       │ U+0063     │       99 │ ASCII
+    'a'       │ U+0061     │       97 │ ASCII
+    't'       │ U+0074     │      116 │ ASCII
+    's'       │ U+0073     │      115 │ ASCII
+    ' '       │ U+0020     │       32 │ ASCII
+    '🐱'      │ U+1F431    │  128,049 │ Emoji (4-byte UTF-8)
+    ' '       │ U+0020     │       32 │ ASCII
+    'a'       │ U+0061     │       97 │ ASCII
+    'n'       │ U+006E     │      110 │ ASCII
+    'd'       │ U+0064     │      100 │ ASCII
+    ' '       │ U+0020     │       32 │ ASCII
+    'c'       │ U+0063     │       99 │ ASCII
+    'a'       │ U+0061     │       97 │ ASCII
+    'f'       │ U+0066     │      102 │ ASCII
+    'é'       │ U+00E9     │      233 │ Latin accent (2-byte UTF-8)
+    ' '       │ U+0020     │       32 │ ASCII
+    '☕'      │ U+2615     │    9,749 │ Symbol (3-byte UTF-8)
+    '!'       │ U+0021     │       33 │ ASCII
 
-Step 2: Apply BPE merges to each piece
-    "I"       → [I]              (common word, single token)
-    " don"    → [Ġdon]           (Ġ represents a leading space)
-    "'t"      → ['t]             (common contraction, single token)
-    " like"   → [Ġlike]          (single token)
-    " Chat"   → [ĠChat]         (single token)
-    "G"       → [G]              (single character)
-    "PT"      → [PT]             (merged — common pair)
-    "'s"      → ['s]             (single token)
-    " token"  → [Ġtoken]        (single token)
-    "izer"    → [izer]           (common suffix, single token)
-    "!"       → [!]              (single character)
-
-Step 3: Map to token IDs
-    [I, Ġdon, 't, Ġlike, ĠChat, G, PT, 's, Ġtoken, izer, !]
-    → [40, 836, 470, 588, 8537, 38, 11571, 338, 11241, 7509, 0]
-
-    11 tokens for 6 words.
+    25 characters, but NOT 25 bytes — because 🐱, é, and ☕ need multiple bytes.
 ```
 
-### What the Model Actually Sees
+### Step 2: UTF-8 Encoding (Characters → Bytes)
 
 ```text
-The model never sees the text "I don't like ChatGPT's tokenizer!"
-It sees: [40, 836, 470, 588, 8537, 38, 11571, 338, 11241, 7509, 0]
+Convert each code point to UTF-8 bytes using the templates:
 
-Each ID looks up a 768-d vector in the embedding table.
-The transformer processes these 11 vectors.
-It has no concept of "words" — only tokens.
+ASCII characters (0-127) → 1 byte each, value = code point:
+    'I' → [73]     ' ' → [32]     'l' → [108]    'o' → [111]
+    'v' → [118]    'e' → [101]    'c' → [99]     'a' → [97]
+    't' → [116]    's' → [115]    'n' → [110]    'd' → [100]
+    'f' → [102]    '!' → [33]
+
+'é' (U+00E9 = 233) → 2-byte template:
+    233 in binary = 00011101001 (11 bits)
+    Template:  110xxxxx  10xxxxxx
+    Stuff:     110_00011  10_101001
+    Decimal:   [195, 169]
+
+'☕' (U+2615 = 9,749) → 3-byte template:
+    9,749 in binary = 0010011000010101 (16 bits)
+    Template:  1110xxxx  10xxxxxx  10xxxxxx
+    Stuff:     1110_0010  10_011000  10_010101
+    Decimal:   [226, 152, 149]
+
+'🐱' (U+1F431 = 128,049) → 4-byte template:
+    128,049 in binary = 000011111010000110001 (21 bits)
+    Template:  11110xxx  10xxxxxx  10xxxxxx  10xxxxxx
+    Stuff:     11110_000  10_011111  10_010000  10_110001
+    Decimal:   [240, 159, 144, 177]
+
+The FULL string as a byte sequence:
+    "I love cats 🐱 and café ☕!"
+    = [73, 32, 108, 111, 118, 101, 32, 99, 97, 116, 115, 32,
+       240, 159, 144, 177, 32, 97, 110, 100, 32, 99, 97, 102,
+       195, 169, 32, 226, 152, 149, 33]
+
+    25 characters → 31 bytes
+    (é added 1 extra byte, ☕ added 2 extra, 🐱 added 3 extra)
+```
+
+### Step 3: Pre-tokenization (Split on Whitespace and Punctuation)
+
+```text
+GPT-2 splits on space/punctuation boundaries BEFORE applying BPE.
+Spaces attach to the NEXT word (GPT-2's convention, shown as Ġ):
+
+    "I love cats 🐱 and café ☕!"
+    → ["I", " love", " cats", " 🐱", " and", " café", " ☕", "!"]
+
+Each piece is now a byte sequence:
+    "I"      → [73]
+    " love"  → [32, 108, 111, 118, 101]
+    " cats"  → [32, 99, 97, 116, 115]
+    " 🐱"    → [32, 240, 159, 144, 177]
+    " and"   → [32, 97, 110, 100]
+    " café"  → [32, 99, 97, 102, 195, 169]
+    " ☕"     → [32, 226, 152, 149]
+    "!"      → [33]
+
+BPE merges operate on these byte sequences independently per piece.
+```
+
+### Step 4: Apply BPE Merges (Bytes → Tokens)
+
+```text
+Now the hash map of learned merges runs on each piece.
+Remember: GPT-2's vocabulary was built from mostly English web text,
+so common English byte sequences were merged early (high priority).
+
+"I" → bytes [73]
+    Single byte, nothing to merge.
+    Byte 73 maps to token: "I"
+    → [I]                                          1 token ✓
+
+" love" → bytes [32, 108, 111, 118, 101]
+    (32,108) = " l" → merged (common pair)
+    (Ġl, 111) → (Ġl, o) → merged
+    (Ġlo, 118) → (Ġlo, v) → merged
+    (Ġlov, 101) → (Ġlov, e) → merged
+    → [Ġlove]                                      1 token ✓
+    (Very common English word → fully merged)
+
+" cats" → bytes [32, 99, 97, 116, 115]
+    Same process — common English word.
+    → [Ġcats]                                      1 token ✓
+
+" 🐱" → bytes [32, 240, 159, 144, 177]
+    (32) = space → Ġ prefix token
+    (240, 159) → check hash map... this byte pair IS common
+                 (many emoji start with 240, 159) → merged
+    (240+159, 144) → check... merged (common emoji prefix)
+    (240+159+144, 177) → check... merged (specific cat emoji)
+    → [Ġ, 🐱]                                      2 tokens
+    (The space stays separate, but the 4 emoji bytes got merged
+     into a single token because GPT-2 saw enough emoji in training)
+
+" and" → bytes [32, 97, 110, 100]
+    Common English word → fully merged.
+    → [Ġand]                                        1 token ✓
+
+" café" → bytes [32, 99, 97, 102, 195, 169]
+    (32, 99) → Ġc... starts merging
+    "caf" merges into known pieces
+    (195, 169) → these are the UTF-8 bytes for 'é'
+                  This pair is common (accented Latin chars appear
+                  a lot in training data) → merged into one token
+    → [Ġcaf, é]                                     2 tokens
+    ("caf" and "é" are separate tokens — the model sees
+     "caf" + "é", not "cafe" + accent)
+
+" ☕" → bytes [32, 226, 152, 149]
+    (32) → Ġ prefix
+    (226, 152, 149) → the 3 bytes for ☕
+                       Less common emoji than 🐱
+                       Might partially merge or stay as byte tokens
+    → [Ġ, â, ĺ, ķ]                                4 tokens
+    (The 3 bytes for ☕ use GPT-2's byte-to-visible-char mapping:
+     byte 226 → â, byte 152 → ĺ, byte 149 → ķ.
+     These LOOK like random characters but they represent raw bytes.
+     The model learned what these byte-token sequences mean.)
+
+"!" → bytes [33]
+    → [!]                                           1 token ✓
+
+Note on GPT-2's byte display:
+    GPT-2 doesn't show raw byte numbers. It maps each of the 256
+    possible bytes to a visible character so humans can read them.
+    Bytes 0-127 mostly map to their ASCII character (! = !, a = a).
+    Bytes 128-255 map to characters like â, ĺ, ķ, Ġ, etc.
+    These are just display names — under the hood, it's all byte values.
+```
+
+### Step 5: Map Tokens to IDs
+
+```text
+Each token in the vocabulary has a unique integer ID:
+
+    [I, Ġlove, Ġcats, Ġ, 🐱, Ġand, Ġcaf, é, Ġ, â, ĺ, ķ, !]
+     ↓    ↓      ↓    ↓   ↓    ↓    ↓   ↓  ↓  ↓  ↓  ↓  ↓
+    [40, 1842, 11875, 220, 8582, 290, 9435, 2634, 220, 226, 152, 149, 0]
+
+    13 token IDs for 25 characters.
+```
+
+### Step 6: Embedding Lookup
+
+```text
+Each token ID indexes into the embedding table (50,257 rows × 768 cols):
+
+    Token ID 40    → look up row 40    → [0.012, -0.034, 0.078, ...] (768 dims)
+    Token ID 1842  → look up row 1842  → [-0.055, 0.091, 0.003, ...]
+    Token ID 8582  → look up row 8582  → [0.044, -0.012, 0.067, ...]
+    ...
+
+    The transformer receives 13 vectors, each 768-dimensional.
+    This is ALL it sees. No text. No characters. No Unicode.
+```
+
+### What Happened to Each Character Type
+
+```text
+    ASCII ('I', 'l', 'o', '!', ...):
+        1 byte each → common sequences merged by BPE into whole-word tokens.
+        "love" = 4 bytes → 1 token. Maximally efficient.
+
+    Latin accent ('é'):
+        2 UTF-8 bytes (195, 169) → merged into 1 token.
+        Common enough in English training data (café, résumé, naïve).
+
+    Emoji ('🐱'):
+        4 UTF-8 bytes (240, 159, 144, 177) → merged into 1 token.
+        Common emoji seen often enough to earn its own token.
+
+    Less common symbol ('☕'):
+        3 UTF-8 bytes (226, 152, 149) → stayed as 3 separate byte tokens.
+        Not frequent enough in training data to merit a merged token.
+        Still representable! Just costs 3 tokens instead of 1.
+
+This is the byte-level BPE trade-off in action:
+    Common things (English words, popular emoji) → few tokens (efficient)
+    Rare things (obscure symbols, rare scripts) → many tokens (expensive, but never unknown)
 ```
 
 ---

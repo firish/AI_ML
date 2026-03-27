@@ -214,6 +214,60 @@ Mini-batch size is typically 32, 64, 128, or 256. Larger batch = smoother gradie
 
 ---
 
+## Weight Initialization: Where Do Starting Weights Come From?
+
+Before training begins, every weight in the network needs a starting value. This matters more than you might think.
+
+```text
+Why not all zeros?
+    If all weights are 0, every neuron computes the same thing.
+    Gradients are identical → all neurons update identically →
+    they stay identical forever. The network has millions of neurons
+    but they all do the same thing. It's like an orchestra where
+    every musician plays the same note.
+    This is called the "symmetry breaking" problem.
+    Random initialization breaks the symmetry.
+
+Why not large random values like N(0, 1)?
+    A weight matrix W of size 768×768 with values drawn from N(0, 1)
+    will produce huge outputs. When you multiply a 768-dim vector by
+    this matrix, each output element is the sum of 768 terms, each
+    around ±1. The result is around ±√768 ≈ ±27.
+
+    Softmax on values of ±27 → extreme probabilities (0.999... or 0.000...)
+    → vanishing gradients → training stalls immediately.
+
+The right scale: small random values.
+    The standard for transformers: N(0, 0.02)
+
+    W = random values drawn from Normal(mean=0, std=0.02)
+
+    Most values fall between -0.04 and +0.04.
+    (95% of a normal distribution is within ±2 standard deviations)
+
+    Why 0.02?
+        Roughly: 1/√(hidden_dim) = 1/√(768) ≈ 0.036
+        0.02 is in the right ballpark to keep activations and gradients
+        in a stable range at initialization. Not derived from a strict
+        formula — empirically tuned to work with LayerNorm + GELU.
+
+    With LayerNorm in the network, initialization is less critical
+    (LayerNorm re-normalizes at every layer), so N(0, 0.02) is
+    "good enough" as a simple default. GPT-1, GPT-2, BERT all use it.
+
+Other initialization schemes (for reference):
+    Xavier/Glorot:   N(0, √(2 / (fan_in + fan_out)))    ← for sigmoid/tanh networks
+    Kaiming/He:      N(0, √(2 / fan_in))                ← for ReLU networks (ResNet)
+    Simple Normal:   N(0, 0.02)                          ← transformers (GPT, BERT)
+
+    fan_in = number of inputs to the layer
+    fan_out = number of outputs from the layer
+    The idea: scale weights so that the variance of activations
+    stays roughly constant as you go deeper.
+```
+
+---
+
 ## What Optimisers Are
 
 Plain gradient descent works but can be slow. **Optimisers** are smarter update rules:

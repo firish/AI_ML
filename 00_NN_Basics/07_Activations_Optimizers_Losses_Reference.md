@@ -303,13 +303,31 @@ Learning rate
 
 Warmup phase (first ~2000 steps):
     lr increases linearly from 0 to peak_lr.
-    Why: at the start, weights are random → gradients are huge and chaotic.
-    A high lr would cause instability. Start slow, ramp up.
+
+    Step 0:     lr = 0.0
+    Step 1000:  lr = peak/2      (halfway through warmup)
+    Step 2000:  lr = peak_lr     (warmup done)
+
+    Why? At the very start, weights are random (see "Weight Initialization"
+    in file 03). Random weights → noisy, unreliable gradients. They point
+    in roughly the right direction but with huge variance.
+
+    A large lr on noisy gradients = big unstable weight updates
+    = training can diverge (loss explodes) or oscillate wildly.
+
+    Warmup says: "take small careful steps while the gradients are garbage,
+    then speed up once the model has found a reasonable region of the loss
+    landscape." It's like walking slowly in a dark room until your eyes
+    adjust, then moving at normal speed.
+
+    Without warmup, transformers frequently fail to train at all —
+    the attention scores blow up in the first few hundred steps.
 
 Cosine decay (rest of training):
     lr decreases following a cosine curve from peak to near-zero.
     Why: early in training, big updates are helpful (exploring the loss landscape).
     Later, small updates are better (fine-tuning into a good minimum).
+    Cosine is smoother than step decay (which drops lr abruptly).
 ```
 
 ```text
