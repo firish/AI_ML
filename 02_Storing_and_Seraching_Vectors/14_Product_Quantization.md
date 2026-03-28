@@ -64,6 +64,169 @@ subvector 8 → closest centroid in codebook 8 → code ID 91
 
 ---
 
+## 2B. How K-Means Actually Works
+
+K-means finds K centroids that best summarize a set of vectors. PQ uses it to build each codebook. Here's the full algorithm.
+
+### The Algorithm
+
+```text
+Input:  N vectors, target K centroids
+Output: K centroid vectors + assignment of each vector to a centroid
+
+── Step 1: Initialize K centroids ──
+
+    Pick K vectors as starting centroids. Two options:
+
+    Random: pick K vectors at random from the dataset.
+        Problem: if two random picks are close together, one centroid
+        is wasted. Can lead to bad clusters.
+
+    K-means++ (standard): pick centroids that are SPREAD OUT.
+        1. Pick first centroid randomly
+        2. For each remaining vector, compute distance to its NEAREST
+           existing centroid
+        3. Pick the next centroid with probability proportional to
+           that distance² (far-away points more likely to be chosen)
+        4. Repeat until you have K centroids
+
+        What "probability proportional to distance²" means:
+        It's a weighted random draw — far points are much more likely
+        to be picked, but close points aren't impossible.
+
+        Example: already picked c₁, choosing next centroid from 5 points:
+
+            Point  Dist to c₁  Dist²  Probability
+            A      1.0         1      1/85  =  1.2%
+            B      2.0         4      4/85  =  4.7%
+            C      3.0         9      9/85  = 10.6%
+            D      5.0         25     25/85 = 29.4%
+            E      6.8         46     46/85 = 54.1%
+                                ──
+                            sum = 85
+
+            Probability = this point's distance² / sum of all distance²
+
+            E (farthest) has 54% chance. A (closest) has 1.2%.
+
+        Why distance² not just distance?
+            Squaring exaggerates the gap. Without squaring, E is ~6.8×
+            more likely than A. With squaring, E is ~46× more likely.
+            More aggressive spread → better initial centroids.
+
+        This guarantees centroids start spread across the data.
+        Almost always used in practice.
+
+── Step 2: Assign each vector to nearest centroid ──
+
+    For every vector v in the dataset:
+        Compute distance to ALL K centroids
+        Assign v to the closest one
+
+    Example with K=3 centroids (c₁, c₂, c₃) and 6 vectors:
+
+        v₁ → closest to c₁ → cluster 1
+        v₂ → closest to c₁ → cluster 1
+        v₃ → closest to c₂ → cluster 2
+        v₄ → closest to c₃ → cluster 3
+        v₅ → closest to c₂ → cluster 2
+        v₆ → closest to c₃ → cluster 3
+
+── Step 3: Recompute centroids as mean of assigned vectors ──
+
+    For each cluster, the new centroid = average of all vectors in it.
+
+    Cluster 1 has v₁=[1,2] and v₂=[3,4]:
+        c₁_new = mean([1,2], [3,4]) = [(1+3)/2, (2+4)/2] = [2, 3]
+
+    Cluster 2 has v₃=[7,8] and v₅=[9,6]:
+        c₂_new = mean([7,8], [9,6]) = [8, 7]
+
+    Cluster 3 has v₄=[5,1] and v₆=[4,2]:
+        c₃_new = mean([5,1], [4,2]) = [4.5, 1.5]
+
+    WHY the mean? Because the mean minimizes the sum of squared
+    distances to all points in the cluster. It's the point that
+    is closest to everything in its group on average.
+
+── Step 4: Repeat steps 2-3 until convergence ──
+
+    With new centroids, some vectors may now be closer to a
+    DIFFERENT centroid than before → reassign them.
+
+    Iteration 1: centroids at [2,3], [8,7], [4.5,1.5]
+        Reassign all vectors → some switch clusters
+        Recompute centroids → they shift slightly
+
+    Iteration 2: centroids at [2.1,2.8], [8.2,7.1], [4.4,1.6]
+        Reassign → fewer switches this time
+        Recompute → smaller shifts
+
+    Iteration 3: centroids at [2.1,2.8], [8.2,7.1], [4.4,1.6]
+        No vectors switched clusters → CONVERGED. Stop.
+
+    Convergence = no vector changes its assignment between iterations.
+    Typically takes 10-50 iterations. Each iteration is O(N × K × d).
+```
+
+### Toy Walkthrough (2D, K=2)
+
+```text
+Data: 6 points in 2D
+    A=[1,1]  B=[2,1]  C=[1,2]  D=[8,8]  E=[9,8]  F=[8,9]
+
+    Visually: two obvious clusters (bottom-left, top-right)
+
+── Initialize (k-means++): ──
+    Pick c₁ = A = [1,1]
+    Farthest point from A is F=[8,9] (distance=11.4) → pick c₂ = F = [8,9]
+
+── Iteration 1: ──
+    Assign:
+        A=[1,1] → dist to c₁=0.0, dist to c₂=11.4 → cluster 1
+        B=[2,1] → dist to c₁=1.0, dist to c₂=10.0 → cluster 1
+        C=[1,2] → dist to c₁=1.0, dist to c₂=9.9  → cluster 1
+        D=[8,8] → dist to c₁=9.9, dist to c₂=1.0  → cluster 2
+        E=[9,8] → dist to c₁=10.6, dist to c₂=1.4 → cluster 2
+        F=[8,9] → dist to c₁=11.4, dist to c₂=0.0 → cluster 2
+
+    Recompute:
+        c₁ = mean(A,B,C) = [(1+2+1)/3, (1+1+2)/3] = [1.33, 1.33]
+        c₂ = mean(D,E,F) = [(8+9+8)/3, (8+8+9)/3] = [8.33, 8.33]
+
+── Iteration 2: ──
+    Reassign all points with new centroids → same assignments.
+    Converged. Done.
+
+    Final centroids: [1.33, 1.33] and [8.33, 8.33]
+    These are the two codebook entries for this subspace.
+```
+
+### Why It Matters for PQ
+
+```text
+In PQ, k-means runs SEPARATELY for each of the M subvector positions.
+
+    Subvectors at position 1 (from all N training vectors)
+        → k-means with K*=256 → 256 centroids = codebook 1
+
+    Subvectors at position 2 (from all N training vectors)
+        → k-means with K*=256 → 256 centroids = codebook 2
+
+    ... (M times total)
+
+Each codebook captures the 256 most representative patterns
+for that slice of the vector space. When encoding a new vector,
+each subvector is mapped to its nearest centroid — that's the
+"closest codebook entry" from section 2.
+
+K-means is also used in IVF (file 15) to partition the full
+vector space into coarse clusters for search routing.
+Same algorithm, different purpose.
+```
+
+---
+
 ## 3. Training the Codebooks
 
 ```python
