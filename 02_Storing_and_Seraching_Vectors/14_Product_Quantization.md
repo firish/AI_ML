@@ -303,6 +303,8 @@ PQ codes:  1B × 8 bytes     = ~8 GB
 
 **Codebook overhead:** 8 codebooks × 256 centroids × 96 dims × 4 bytes = ~768 KB. Negligible.
 
+**Why so small?** Each codebook stores only the 256 centroids (cluster centers), not the 1B points that were used to find them — 256 × 96d versus 1B × 96d, roughly seven orders of magnitude difference. K-means training reads all 1B subvectors to iteratively compute those 256 representative points, but the output is just those 256 centroids. After training, each of the 1B subvectors gets replaced by a 1-byte centroid ID (the code assignment). At that point you can discard the original vectors entirely: you go from ~3 TB of raw float32 data to ~8 GB of codes + 768 KB of codebooks. The compression payoff is massive, but the cost is that reconstructing any vector now gives you the concatenation of 8 looked-up centroids — an approximation, never the exact original.
+
 ---
 
 ## 6. Distance Computation: ADC (Asymmetric Distance Computation)
@@ -367,46 +369,72 @@ The table lookup replaces expensive distance math with cheap array indexing.
 
 ---
 
-## 7. Walk-Through Example
+## 7. The Search Phase — What the Code Above Actually Does
 
-**Setup:** D=8, M=4 (4 subvectors of 2 dims each), K*=4 (2-bit codes for simplicity).
+When a query arrives, PQ scores every database vector without ever reconstructing it.
 
-**Codebooks (trained):**
+### Step 1: Build the distance table (the expensive part — happens ONCE per query)
+
 ```
-Codebook 0 (sub dims 0-1): c0=[1,0], c1=[0,1], c2=[-1,0], c3=[0,-1]
-Codebook 1 (sub dims 2-3): c0=[2,2], c1=[2,-2], c2=[-2,2], c3=[-2,-2]
-Codebook 2 (sub dims 4-5): c0=[1,1], c1=[1,-1], c2=[-1,1], c3=[-1,-1]
-Codebook 3 (sub dims 6-7): c0=[0,3], c1=[3,0], c2=[0,-3], c3=[-3,0]
-```
+Slice the query into the same M=8 subvectors:
+    q = [q_sub0, q_sub1, ..., q_sub7]      (each is 96 dims)
 
-**Encoding vector v = [0.9, 0.1, 1.8, 2.1, -0.9, 1.1, 0.2, 2.8]:**
-```
-sub0 = [0.9, 0.1]  → closest to c0=[1,0]   → code 0
-sub1 = [1.8, 2.1]  → closest to c0=[2,2]   → code 0
-sub2 = [-0.9, 1.1] → closest to c2=[-1,1]  → code 2
-sub3 = [0.2, 2.8]  → closest to c0=[0,3]   → code 0
-```
+For each subspace m, compute the L2 distance from q_subm to all 256
+centroids in codebook m:
 
-**PQ code for v:** `[0, 0, 2, 0]` — 4 bytes instead of 32.
+    dist_table[m][k] = ||q_subm − centroid_m_k||²
 
-**Querying with q = [0, 1, -2, 2, 1, 1, 3, 0]:**
-
-Build distance table (L2 squared to each centroid):
-```
-dist_table[0]: dist([0,1], c0)=2, dist([0,1], c1)=0, dist([0,1], c2)=2, dist([0,1], c3)=4
-dist_table[1]: dist([-2,2], c0)=16, dist([-2,2], c1)=32, dist([-2,2], c2)=0, dist([-2,2], c3)=36
-dist_table[2]: dist([1,1], c0)=0, dist([1,1], c1)=4, dist([1,1], c2)=4, dist([1,1], c3)=8
-dist_table[3]: dist([3,0], c0)=9, dist([3,0], c1)=0, dist([3,0], c2)=9, dist([3,0], c3)=36
+Table size: 8 subspaces × 256 centroids = 2,048 distance computations.
+Each one is a 96-dim L2 distance — real math, but only 2,048 of them total.
 ```
 
-**Distance to v (code [0, 0, 2, 0]):**
+This table answers: "If a database vector used centroid k in subspace m,
+how far is that subspace from my query?"
+
+### Step 2: Score every database vector (the cheap part — happens per vector)
+
 ```
-dist_table[0][0] + dist_table[1][0] + dist_table[2][2] + dist_table[3][0]
-= 2 + 16 + 4 + 9
-= 31
+Each database vector is stored as 8 bytes: [c0, c1, c2, c3, c4, c5, c6, c7]
+where each byte is a centroid index (0–255).
+
+For vector i with codes [c0, c1, ..., c7]:
+
+    approx_dist = dist_table[0][c0]
+                + dist_table[1][c1]
+                + ...
+                + dist_table[7][c7]
+
+That's 8 table lookups + 7 additions. No floating point math per vector.
 ```
 
-Just 4 table lookups and 3 additions. No vector math at query time.
+### Why this works mathematically
+
+```
+L2 distance decomposes across independent subspaces:
+
+    ||q − x||² = ||q_sub0 − x_sub0||² + ||q_sub1 − x_sub1||² + ... + ||q_sub7 − x_sub7||²
+
+PQ replaces each x_subm with its centroid, so:
+
+    ||q − x̃||² ≈ ||q_sub0 − centroid[c0]||² + ... + ||q_sub7 − centroid[c7]||²
+               = dist_table[0][c0] + ... + dist_table[7][c7]
+
+Each term is already in the table. The sum IS the approximate distance.
+```
+
+### Step 3: Return top-k
+
+Sort the approximate distances, return the k smallest.
+
+### The key insight
+
+```
+Expensive part (distance table):  2,048 real distance computations  → once per query
+Cheap part (per-vector scoring):  8 lookups + 7 additions           → per vector
+
+For 1B vectors: 2,048 + 8B lookups  vs  ~600B float ops without PQ.
+The table lookup replaces expensive distance math with cheap array indexing.
+```
 
 ---
 
@@ -430,7 +458,7 @@ PQ assumes subvector positions are independent — it trains each codebook separ
 
 **Example:** If dims 95 and 96 are highly correlated but land in different subvectors, PQ can't exploit that.
 
-**Fix:** OPQ (see section 8B below).
+**Fix:** OPQ — rotate dimensions before splitting so correlated dims land in the same subvector. See `15_OPQ.md`.
 
 ### More subvectors = less error per sub, but less expressiveness per code
 
@@ -445,43 +473,7 @@ More M = more bytes but better accuracy. It's a compression vs accuracy knob.
 
 ---
 
-### 8B. OPQ (Optimized Product Quantization)
-
-**The problem PQ has:** Subvector boundaries are arbitrary. You just chop the vector at every D/M dimensions. If correlated dimensions land in different subvectors, each codebook misses that structure and quantization error increases.
-
-```
-Dims: [0...95 | 96...191 | ...]
-             ↑
-       If dim 95 and dim 96 are correlated,
-       they're split across codebooks 1 and 2.
-       Neither codebook captures their relationship.
-```
-
-**OPQ's fix:** Learn a rotation matrix R that transforms vectors before splitting, so that within each subvector the variance is maximized and across subvectors the correlation is minimized.
-
-```
-Original vector:  v          (768-dim)
-Rotated vector:   R × v      (768-dim, same size, just rotated)
-Then apply PQ:    PQ_ENCODE(R × v)
-```
-
-**The rotation doesn't change distances** (it's orthogonal), but it redistributes information so the subvector splits are better aligned with the data's structure.
-
-**Training:** Alternates between:
-1. Fix rotation R → train PQ codebooks
-2. Fix codebooks → optimize R to minimize total quantization error
-3. Repeat until convergence
-
-**In FAISS:** `OPQ8_96,PQ8` means "apply OPQ rotation (8 subspaces, 96 dims each), then PQ with 8 codebooks."
-
-**When to use OPQ:**
-- Almost always. It's strictly better than PQ with negligible extra cost
-- Especially helps when data has strong cross-dimension correlations (which embeddings typically do)
-- Typical improvement: 2-5% recall gain for free
-
----
-
-### 8C. SDC vs ADC (Symmetric vs Asymmetric Distance)
+### 8B. SDC vs ADC (Symmetric vs Asymmetric Distance)
 
 **ADC (what we covered in section 6):** Query stays at full precision, only stored vectors are quantized. Distance = `dist(q_sub, centroid)` — asymmetric because one side is exact, one is approximate.
 
@@ -543,9 +535,9 @@ Then apply PQ:    PQ_ENCODE(R × v)
 5. **K*=256 is universal** — one byte per subvector code
 6. **M is the accuracy knob** — more subvectors = more bytes = better accuracy
 7. **Codebooks are trained offline** via k-means on each subspace independently
-8. **OPQ rotates before splitting** — reduces cross-subvector correlation, almost always worth using
+8. **OPQ rotates before splitting** — reduces cross-subvector correlation, almost always worth using (see `15_OPQ.md`)
 9. **ADC > SDC** — keep query at full precision, only quantize stored vectors
 
 ---
 
-**Next:** IVF + PQ — how clustering (which vectors to search) and compression (how to store and compare them) combine for production-scale vector search.
+**Next:** `15_OPQ.md` — how rotating dimensions before PQ dramatically reduces quantization error.
