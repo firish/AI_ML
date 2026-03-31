@@ -34,11 +34,11 @@ Now rotate the ellipse so its long axis aligns with dim 0 and its short axis ali
 
 ```
     dim 1
-      |       . .
-      |       . .
+      |       . . .
+      |       . . .
       | . . . . . . . . .      ← long axis now along dim 0
-      |       . .
-      |       . .
+      |       . . .
+      |       . . .
       +------------------dim 0
 
 Codebook 1 handles the high-variance direction (dim 0).
