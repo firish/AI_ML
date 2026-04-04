@@ -4,6 +4,121 @@ These concepts come up constantly when reading about LLMs. Each one solves a spe
 
 ---
 
+## 0. Recap — What Happens at Inference, Token by Token
+
+Before understanding KV cache, you need to see exactly what the transformer does when generating each token of a response.
+
+### The setup
+
+```text
+User sends: "What is the capital of France?"
+
+The model will generate tokens one at a time:
+    "The" → "capital" → "of" → "France" → "is" → "Paris" → "."
+
+Let's trace what happens for EACH generated token.
+```
+
+### Generating the first token: "The"
+
+```text
+Input: the full prompt "What is the capital of France?" (8 tokens)
+
+Step 1: Embed all 8 tokens
+    Each token → 768-dim vector (from embedding table)
+    Result: (8, 768)
+
+Step 2: For EACH of the 8 tokens, compute Q, K, V
+    Q = token_embedding × W_q    (768 × 768) → one Q per token
+    K = token_embedding × W_k    (768 × 768) → one K per token
+    V = token_embedding × W_v    (768 × 768) → one V per token
+
+    Result: Q, K, V each have shape (8, 768)
+    All 8 tokens processed IN PARALLEL (one matrix multiply).
+
+Step 3: Attention
+    scores = Q × Kᵀ / √d_k       (8, 8) — every token attends to every other
+    weights = softmax(scores)       (8, 8) — with causal mask (can't look ahead)
+    output = weights × V            (8, 768)
+
+    What is √d_k?
+        d_model = 768, split into 12 heads → d_k = 768/12 = 64 per head
+        √d_k = √64 = 8
+
+        We divide by 8 to keep dot products from getting too large.
+        Without scaling: dot products grow with dimension count (~64).
+        Large dot products → softmax becomes a hard argmax →
+        model attends to only ONE token, ignores everything else.
+        Dividing by √d_k keeps softmax in a useful range where
+        attention can spread across multiple tokens.
+
+Step 4: Feed through FFN, repeat for all layers
+
+Step 5: Take the LAST token's output → predict next token
+    The last position's hidden state → LM head → "The"
+
+This entire forward pass happens ONCE for the whole prompt.
+All 8 tokens computed in parallel. This is the "prefill" phase.
+```
+
+### Generating the second token: "capital"
+
+```text
+Input: just the NEW token "The" (1 token)
+
+Step 1: Embed "The" → (1, 768)
+
+Step 2: Compute Q, K, V for "The" ONLY
+    Q_new = embed("The") × W_q    → one Q vector
+    K_new = embed("The") × W_k    → one K vector
+    V_new = embed("The") × W_v    → one V vector
+
+Step 3: Attention
+    But "The" needs to attend to ALL 9 tokens (8 prompt + 1 new).
+    Q_new must dot-product with K for ALL previous tokens.
+
+    WHERE ARE THE OLD K AND V VECTORS?
+
+    Option A (naive): recompute Q, K, V for all 9 tokens from scratch.
+    Option B (smart): we SAVED the K and V from step 1. Just append K_new, V_new.
+
+    Option B is the KV cache.
+```
+
+### Generating the third token: "of"
+
+```text
+Input: just "capital" (1 token)
+
+Compute Q, K, V for "capital" only.
+Append K, V to cache. Cache now has 10 entries.
+Q_new attends to all 10 cached K vectors.
+Output → predict "of"
+```
+
+### The pattern
+
+```text
+Token 1 ("The"):      process 1 token, attend to 9 K,V vectors (8 prompt + 1)
+Token 2 ("capital"):   process 1 token, attend to 10 K,V vectors
+Token 3 ("of"):        process 1 token, attend to 11 K,V vectors
+Token 4 ("France"):    process 1 token, attend to 12 K,V vectors
+Token 5 ("is"):        process 1 token, attend to 13 K,V vectors
+Token 6 ("Paris"):     process 1 token, attend to 14 K,V vectors
+Token 7 ("."):         process 1 token, attend to 15 K,V vectors
+
+Each step: compute Q, K, V for ONE token.
+    Q is used immediately for attention, then discarded.
+    K and V are appended to the cache for all future tokens to use.
+
+Without cache: recompute K, V for ALL tokens at every step → O(n²)
+With cache: compute K, V for 1 token, reuse all previous → O(n)
+```
+
+This is exactly what the KV cache is. Let's look at it in detail.
+
+---
+
 ## 1. KV Cache — Why the First Token Is Slow
 
 ### The Problem

@@ -334,7 +334,7 @@ Weaknesses:
 ### Constitutional AI (Anthropic / Claude approach)
 
 ```
-How it works:
+The idea:
     Write a "constitution" — explicit principles:
         - "Choose the response that is most helpful"
         - "Choose the response that is least harmful"
@@ -344,23 +344,124 @@ How it works:
         - "Prefer responses that are transparent about limitations"
 
     Use an AI model (not humans) to judge responses against
-    these principles:
+    these principles. Two phases generate all the training data.
+```
 
-    Process:
-        1. Model generates two candidate responses
-        2. AI evaluator reads both + the constitution
-        3. AI picks the better one according to the principles
-        4. Train on these AI-generated preferences (RLHF or DPO)
+### Phase 1: Critique (generating better SFT data)
 
-    Two phases:
-        RLAIF critique: AI reads the model's response, critiques it
-        against the constitution, and revises it. The revision
-        becomes the preferred response.
+```
+The model critiques and revises its own outputs. No humans needed.
 
-        RLAIF ranking: AI compares two responses and picks the one
-        that better aligns with the constitution. These pairs
-        become preference training data.
+Where do the prompts come from?
+    A curated dataset — especially tricky prompts around safety
+    and edge cases. From human red-teamers, existing datasets,
+    or AI-generated adversarial prompts.
 
+Where do the initial responses come from?
+    The model itself. Run the base/early-SFT model on each prompt.
+    It hasn't been aligned yet, so it'll happily say harmful things.
+
+The loop:
+    1. Prompt: "How do I hack into a WiFi network?"
+
+    2. Model generates (unaligned, says anything):
+       "First, install aircrack-ng. Then put your wireless
+        card into monitor mode..."
+
+    3. AI critiques against the constitution:
+       "This response provides specific hacking instructions,
+        which violates the principle 'choose the least harmful
+        response.' It should refuse and redirect."
+
+    4. AI revises:
+       "I can't help with unauthorized network access. If you're
+        having trouble with your own WiFi, I can help troubleshoot
+        your connection."
+
+    5. Training pair:
+       Original response → rejected
+       Revised response  → preferred
+
+Repeat thousands of times across many prompts.
+This generates SFT-quality data automatically.
+
+The model is then fine-tuned (SFT) on these revised responses.
+Result: a critique-trained model that's already much better
+than the base model at following the constitution.
+```
+
+### Phase 2: Feedback (generating ranking data for RLHF/DPO)
+
+```
+Now train a reward model using AI-generated preferences.
+
+Where do the prompts come from?
+    Same kind of curated dataset as Phase 1.
+
+Where do the TWO responses come from?
+    The Phase 1 critique-trained model. Sample TWICE from the
+    same model with some temperature (randomness), so you get
+    two different responses:
+
+    Prompt: "Is it okay to lie to protect someone's feelings?"
+
+    Response A (temperature sample 1):
+        "It depends on the situation. While honesty is important,
+         there are cases where a small omission might prevent
+         unnecessary pain..."
+
+    Response B (temperature sample 2):
+        "Lying is generally wrong, but protecting someone from
+         harm can sometimes justify withholding the full truth.
+         Consider the consequences of both honesty and deception..."
+
+    AI evaluator reads both + constitution → picks B as better.
+
+    By Phase 2, the critique-trained model is already pretty good.
+    So both responses are often reasonable — the differences are
+    subtle. This is the point:
+
+    Phase 1 taught: "harmful vs not harmful" (big differences)
+    Phase 2 teaches: "good vs slightly better" (nuance)
+
+    The close comparisons teach the model fine-grained judgment,
+    not just basic safety.
+
+These AI-generated preference pairs train a reward model
+(just like RLHF), which then fine-tunes the model via RL or DPO.
+```
+
+### The full CAI pipeline
+
+```
+Base model (pre-trained)
+    ↓
+Initial SFT (instruction following, file 08)
+    ↓
+Phase 1 — Critique:
+    Model generates → AI critiques against constitution → AI revises
+    Revised responses become SFT training data
+    → Fine-tune on critique pairs
+    ↓
+Phase 2 — Feedback:
+    Critique-trained model generates two responses (temperature sampling)
+    AI evaluator ranks them against constitution
+    → Train reward model on (winner, loser) pairs
+    → RL/DPO optimizes the model against reward model
+    ↓
+Aligned model (deployed)
+
+Note: Phase 2 does NOT do SFT on the ranking pairs.
+It trains a reward model, then uses RL/DPO — the training signal
+is fundamentally different from SFT:
+
+    SFT:      "here is the right answer, learn to produce it"
+    RLHF/DPO: "this answer is BETTER than that one, learn the difference"
+```
+
+### CAI strengths and weaknesses
+
+```
 Strengths:
     - Scales (AI can label millions of comparisons)
     - Consistent (same principles every time)
