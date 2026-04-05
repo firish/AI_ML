@@ -28,12 +28,15 @@ Step 1: Embed all 8 tokens
     Each token → 768-dim vector (from embedding table)
     Result: (8, 768)
 
-Step 2: For EACH of the 8 tokens, compute Q, K, V
-    Q = token_embedding × W_q    (768 × 768) → one Q per token
-    K = token_embedding × W_k    (768 × 768) → one K per token
-    V = token_embedding × W_v    (768 × 768) → one V per token
+Steps 2-4 happen ONCE PER LAYER (12 to 96 layers depending on model).
+Each layer has its OWN W_q, W_k, W_v — so Q, K, V are recomputed
+at every layer with different learned weights.
 
-    Result: Q, K, V each have shape (8, 768)
+--- Layer 0 ---
+Step 2: Compute Q, K, V for all 8 tokens
+    Q = embedding × W_q₀     → one Q per token
+    K = embedding × W_k₀     → one K per token
+    V = embedding × W_v₀     → one V per token
     All 8 tokens processed IN PARALLEL (one matrix multiply).
 
 Step 3: Attention
@@ -52,8 +55,21 @@ Step 3: Attention
         Dividing by √d_k keeps softmax in a useful range where
         attention can spread across multiple tokens.
 
-Step 4: Feed through FFN, repeat for all layers
+Step 4: Feed through FFN → output of layer 0
 
+--- Layer 1 ---
+    Take output of layer 0 as input.
+    Compute NEW Q, K, V using layer 1's own W_q₁, W_k₁, W_v₁
+    Attention → FFN → output of layer 1
+
+--- Layer 2 through N ---
+    Same process. Each layer's W_q, W_k, W_v are different
+    learned matrices, so each layer attends to different things:
+        Early layers: syntax, word sense
+        Middle layers: semantic relationships
+        Late layers: high-level reasoning
+
+--- After final layer ---
 Step 5: Take the LAST token's output → predict next token
     The last position's hidden state → LM head → "The"
 
@@ -69,43 +85,90 @@ Input: just the NEW token "The" (1 token)
 Step 1: Embed "The" → (1, 768)
 
 Step 2: Compute Q, K, V for "The" ONLY
-    Q_new = embed("The") × W_q    → one Q vector
-    K_new = embed("The") × W_k    → one K vector
-    V_new = embed("The") × W_v    → one V vector
+    Q_new = (1, 768) × W_q (768, 768) = (1, 768)
+    K_new = (1, 768) × W_k (768, 768) = (1, 768)
+    V_new = (1, 768) × W_v (768, 768) = (1, 768)
 
-Step 3: Attention
-    But "The" needs to attend to ALL 9 tokens (8 prompt + 1 new).
-    Q_new must dot-product with K for ALL previous tokens.
+Step 3: Append to KV cache
+    K_cached was (8, 768) from prefill.
+    K_all = concat(K_cached, K_new) = (9, 768)     ← cache grows by 1 row
+    V_all = concat(V_cached, V_new) = (9, 768)
 
-    WHERE ARE THE OLD K AND V VECTORS?
+Step 4: Attention (with shapes)
+    scores  = Q_new × K_allᵀ  = (1, 768) × (768, 9) = (1, 9)
+                                  ↑ one score per past token
+    weights = softmax(scores / √d_k) = (1, 9)
+                                  ↑ how much to attend to each of 9 tokens
+    output  = weights × V_all = (1, 9) × (9, 768) = (1, 768)
+                                  ↑ weighted blend of all 9 value vectors
 
-    Option A (naive): recompute Q, K, V for all 9 tokens from scratch.
-    Option B (smart): we SAVED the K and V from step 1. Just append K_new, V_new.
+Step 5: output (1, 768) → LM head → predict "capital"
+```
 
-    Option B is the KV cache.
+**The data flow at each layer:**
+```text
+                    New token "The"
+                         │
+                    embed (1, 768)
+                         │
+              ┌──────────┼──────────┐
+              ↓          ↓          ↓
+           Q_new      K_new      V_new
+          (1,768)    (1,768)    (1,768)
+              │          │          │
+              │     ┌────┴────┐ ┌───┴────┐
+              │     │  CACHE  │ │ CACHE  │
+              │     │ K_old   │ │ V_old  │
+              │     │(8,768)  │ │(8,768) │
+              │     │+K_new   │ │+V_new  │
+              │     │=(9,768) │ │=(9,768)│
+              │     └────┬────┘ └───┬────┘
+              │          │          │
+              ↓          ↓          │
+           Q × Kᵀ = (1,9) scores   │
+              │                     │
+           softmax → (1,9) weights  │
+              │                     │
+              └─── weights × V ─────┘
+                        │
+                   output (1,768)
+```
+
+**This happens at EVERY layer, each with its own cache:**
+```text
+Layer 0:  K_cache (8→9, 768),  V_cache (8→9, 768)   ← grows by 1
+Layer 1:  K_cache (8→9, 768),  V_cache (8→9, 768)   ← grows by 1
+...
+Layer 11: K_cache (8→9, 768),  V_cache (8→9, 768)   ← grows by 1
 ```
 
 ### Generating the third token: "of"
 
 ```text
-Input: just "capital" (1 token)
+Input: just "capital" (1 token) → embed → (1, 768)
 
-Compute Q, K, V for "capital" only.
-Append K, V to cache. Cache now has 10 entries.
-Q_new attends to all 10 cached K vectors.
+Compute Q, K, V for "capital" only → each (1, 768)
+Append K, V to cache → cache now has 10 entries per layer
+
+scores  = Q_new × K_allᵀ = (1, 768) × (768, 10) = (1, 10)
+weights = softmax(scores / √d_k) = (1, 10)
+output  = weights × V_all = (1, 10) × (10, 768) = (1, 768)
+
 Output → predict "of"
 ```
 
 ### The pattern
 
 ```text
-Token 1 ("The"):      process 1 token, attend to 9 K,V vectors (8 prompt + 1)
-Token 2 ("capital"):   process 1 token, attend to 10 K,V vectors
-Token 3 ("of"):        process 1 token, attend to 11 K,V vectors
-Token 4 ("France"):    process 1 token, attend to 12 K,V vectors
-Token 5 ("is"):        process 1 token, attend to 13 K,V vectors
-Token 6 ("Paris"):     process 1 token, attend to 14 K,V vectors
-Token 7 ("."):         process 1 token, attend to 15 K,V vectors
+Token 1 ("The"):      Q(1,768) × K_allᵀ(768, 9) → scores(1, 9)  → output(1,768)
+Token 2 ("capital"):   Q(1,768) × K_allᵀ(768,10) → scores(1,10)  → output(1,768)
+Token 3 ("of"):        Q(1,768) × K_allᵀ(768,11) → scores(1,11)  → output(1,768)
+Token 4 ("France"):    Q(1,768) × K_allᵀ(768,12) → scores(1,12)  → output(1,768)
+Token 5 ("is"):        Q(1,768) × K_allᵀ(768,13) → scores(1,13)  → output(1,768)
+Token 6 ("Paris"):     Q(1,768) × K_allᵀ(768,14) → scores(1,14)  → output(1,768)
+Token 7 ("."):         Q(1,768) × K_allᵀ(768,15) → scores(1,15)  → output(1,768)
+
+Cache grows by 1 row per token, per layer. Output is always (1, 768).
 
 Each step: compute Q, K, V for ONE token.
     Q is used immediately for attention, then discarded.
