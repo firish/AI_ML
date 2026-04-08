@@ -273,16 +273,101 @@ This is the key property. The model is FORCED to learn relative distances, not a
 
 ### Extending to d dimensions
 
-For a 768-dim vector, we can't do one big rotation. Instead, split into d/2 pairs and rotate each pair independently at a different frequency:
+For a 768-dim vector, we can't do one big rotation. Instead, split into d/2 pairs and rotate each pair independently at a different frequency.
+
+Important: the d/2 pairs are pairs of DIMENSIONS within one token's vector, not pairs of tokens. Every token gets all 384 pairs rotated. The relative position between any two tokens (1 and 3, or 1 and 100) comes from the Q^T · K dot product — not from pairing tokens together.
 
 ```text
 Vector: [x₀, x₁, x₂, x₃, x₄, x₅, ..., x₇₆₆, x₇₆₇]
 Split:  [(x₀,x₁), (x₂,x₃), (x₄,x₅), ..., (x₇₆₆,x₇₆₇)]
-                                                ↑ 384 pairs
+                                                ↑ 384 pairs of DIMENSIONS
 
 Each pair (x_{2i}, x_{2i+1}) rotated by angle: position × θᵢ
+```
 
-Where θᵢ = 10000^(-2i/d):
+The rotation matrix is block-diagonal — each pair is an independent 2D rotation:
+
+```text
+[R(mθ₀)   0       0     ...  0      ]
+[0       R(mθ₁)   0     ...  0      ]
+[0       0       R(mθ₂) ...  0      ]
+[...                                 ]
+[0       0       0     ... R(mθ₃₈₃) ]
+
+Each R is a 2×2 rotation matrix. The pairs don't interact with each other.
+This is NOT the same as one big 768-dim rotation (which would be a single
+angle in a single plane). Each pair rotates at its own frequency.
+```
+
+How Q^T · K recovers relative position in d dimensions: each pair independently contributes cos((m-n)θᵢ) to the dot product, just like the 2D case. The full dot product sums all pairs:
+
+```text
+Q_m^T · K_n = Σᵢ (terms involving cos((m-n) × θᵢ) and original q,k values)
+
+Every pair encodes the SAME position difference (m-n), just at a different frequency θᵢ.
+```
+
+### Why multiple frequencies (not just one)
+
+A single frequency breaks down:
+
+```text
+Fast frequency only (θ = 1.0 for all pairs):
+    cos(0 × 1.0) = 1.0    ← position difference = 0
+    cos(6.28 × 1.0) ≈ 1.0  ← position difference ≈ 6.28
+    Model thinks 0 apart and ~6 apart are the SAME. Cosine wraps every 2π.
+
+Slow frequency only (θ = 0.001 for all pairs):
+    cos(1 × 0.001) = 0.9999995
+    cos(2 × 0.001) = 0.999998
+    Model can barely tell position 1 apart from position 2.
+
+Single frequency forces a tradeoff:
+    Fast → good at nearby positions, blind to distant ones (wraps around)
+    Slow → good at distant positions, blind to nearby ones (everything looks the same)
+```
+
+The solution: use DIFFERENT frequencies for different pairs (the clock analogy).
+
+```text
+A clock has three hands spinning at different speeds. Each alone is ambiguous:
+    Second hand: can't tell 0:00:05 from 1:00:05 — wraps every minute
+    Minute hand: can't tell 0:00 from 1:00 — wraps every hour
+    Hour hand:   can't tell 3:00:00 from 3:00:15 — moves too slowly to notice
+
+But all three together uniquely identify any time.
+
+RoPE does the same with position:
+    Pair 0   (θ=1.0):    "second hand" — separates position 5 from 6,
+                          but 5 and 5+2π look the same
+    Pair 100 (θ=0.22):   "minute hand" — separates 5 from 20,
+                          but can't distinguish 5 from 6
+    Pair 383 (θ=0.0001): "hour hand" — separates 5 from 5000,
+                          but 5 vs 6 looks identical
+```
+
+Concrete proof that multiple frequencies resolve ambiguity:
+
+```text
+Single frequency (θ=1.0 for all pairs):
+    diff=1:    cos(1.0)  = 0.54   in ALL pairs
+    diff=7.28: cos(7.28) = 0.54   in ALL pairs
+    → identical. Model is blind to this difference.
+
+Add a second frequency (θ₁=0.3):
+    diff=1:    pair0: cos(1.0)=0.54,   pair1: cos(0.3)=0.96
+    diff=7.28: pair0: cos(7.28)=0.54,  pair1: cos(2.18)=-0.57
+                                                ^^^^^^^^^^^
+                                                NOW DIFFERENT
+
+Each additional frequency eliminates more ambiguities, until 384 frequencies
+can uniquely encode any position difference the model will ever see.
+```
+
+### Frequency schedule
+
+```text
+θᵢ = 10000^(-2i/d):
     i=0:   θ₀ = 10000^(0)    = 1.0         (fast rotation)
     i=1:   θ₁ = 10000^(-2/d) ≈ 0.95        (slightly slower)
     i=100: θ₁₀₀ = 10000^(-200/768) ≈ 0.22  (moderate)
@@ -316,10 +401,15 @@ Same token "cat" at position 50:
     Pair 0 rotated by 50 rad — totally different from position 3.
     Pair 3 rotated by 0.05 rad — barely different from position 3.
 
-Far-apart tokens look very different in the fast dimensions,
-nearly identical in the slow dimensions.
-When dot products are computed, each dimension contributes differently
-to separating near vs. far position pairs.
+How each dimension type sees position differences:
+
+              Close tokens (diff=2)    Far tokens (diff=100)
+Fast dims     very different            very different (but wraps → unreliable)
+Slow dims     barely different          more different (no wrap → reliable)
+
+Fast dims change a lot for ANY distance, but wrap unpredictably (aliasing).
+Slow dims change monotonically — small absolute change, but reliable.
+Together, every position difference gets a unique fingerprint.
 ```
 
 ---
@@ -502,9 +592,38 @@ Method 2: NTK-Aware Scaling (bloc97, 2023 — "Neural Tangent Kernel")
         No fine-tuning required for many tasks.
 
 Method 3: YaRN (Peng et al., 2023)
-    Combines interpolation + NTK, applies different scaling to different
-    frequency bands. Also adds an attention temperature correction.
-    State of the art for context extension.
+    Key insight: interpolation and NTK each break something.
+        Interpolation: squashes ALL frequencies → hurts short-range (fast dims)
+        NTK: scales ALL frequencies by the same base → doesn't help slow dims enough
+
+    YaRN splits the 384 dimension pairs into three bands and treats each differently:
+
+        Fast dims (low i, high θ):
+            These already rotate many times within training length.
+            Extending context doesn't push them out-of-distribution.
+            → Leave them ALONE. No scaling needed.
+
+        Slow dims (high i, low θ):
+            These barely complete one rotation in training length.
+            Extending context pushes them into unseen angles.
+            → Apply interpolation (compress positions into trained range).
+
+        Medium dims (middle i):
+            → Blend between no-scaling and interpolation smoothly.
+
+    This way: short-range attention (driven by fast dims) is preserved exactly,
+    long-range attention (driven by slow dims) is extended without breaking.
+
+    Attention temperature correction:
+        When you extend context, each query attends over MORE keys.
+        More keys → the dot product values spread out differently →
+        softmax becomes less peaked (entropy increases).
+        The model was trained with sharper attention distributions.
+
+        Fix: scale the attention logits by a learned temperature factor
+        (slightly > 1) to restore the sharpness the model expects.
+        Without this, the model "spreads attention too thin" over the
+        longer context and quality drops.
 
     LLaMA 3 (8K training) → extended to 128K using YaRN.
 ```
