@@ -269,6 +269,25 @@ The score depends only on (n - m): the RELATIVE position.
 Not on m alone, not on n alone. Only the distance between them.
 ```
 
+**Common confusion:** (n-m) is NOT the input to the rotation. It's what falls out of the algebra.
+The rotation input is always each token's own absolute position:
+
+```text
+10 tokens during prefill:
+    q₀ = RoPE(Q₀, pos=0),  k₀ = RoPE(K₀, pos=0)
+    q₁ = RoPE(Q₁, pos=1),  k₁ = RoPE(K₁, pos=1)
+    ...
+    q₉ = RoPE(Q₉, pos=9),  k₉ = RoPE(K₉, pos=9)
+
+Each token is rotated exactly ONCE, by its own absolute position.
+10 Q vectors → 10 rotations (one per token, by its position).
+10 K vectors → 10 rotations (same).
+
+The (n-m) relative distance is never explicitly computed.
+It emerges automatically when you take the dot product q_m · k_n,
+because R(m)ᵀR(n) = R(n-m) collapses the two individual rotations.
+```
+
 This is the key property. The model is FORCED to learn relative distances, not absolute positions.
 
 ### Extending to d dimensions
