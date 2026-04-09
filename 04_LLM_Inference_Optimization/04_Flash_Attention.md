@@ -226,70 +226,81 @@ Flash Attention:
 
 ---
 
-## 3. Analogy: Grading Exams
+## 3. HBM Traffic — Standard vs Flash
+
+Two things to keep distinct: `n` = sequence length (number of tokens), `d` = head dimension (feature size per head, e.g. 128). `Br` = block size in the sequence dimension (how many token rows per Q block).
 
 ```text
-Standard attention is like a teacher who:
-    1. Collects ALL 100 exams
-    2. Reads through ALL of them and writes every score on a giant 100×100 spreadsheet
-    3. Puts the spreadsheet in a filing cabinet (HBM)
-    4. Takes the spreadsheet back out to compute curved grades
-    5. Puts the curved grades back in the filing cabinet
-    6. Takes them out AGAIN to compute final results
+Standard attention — HBM touches (in scalar values):
 
-    The filing cabinet is slow to access. Three round trips for a huge spreadsheet.
+    Read Q:        n × d
+    Read K:        n × d
+    Write S:       n × n       ← full attention score matrix
+    Read  S:       n × n       ← read back for softmax
+    Write P:       n × n       ← softmax output
+    Read  P:       n × n       ← read back for PV multiply
+    Read V:        n × d
+    Write O:       n × d
+    ──────────────────────────────
+    Total:         4(n × d) + 4(n × n)
+                               ^^^^^^^^
+                               dominates when n >> d
 
-Flash Attention is like a teacher who:
-    1. Takes a stack of 10 exams at a time to their desk (SRAM)
-    2. Grades them, updates a running class average, stacks the graded exams
-    3. Takes the next stack of 10, grades them, updates running average
-    4. Never creates the giant spreadsheet at all
-    5. Only goes to the filing cabinet to pick up and drop off small stacks
+Flash attention — HBM touches:
 
-    Same final grades. Far fewer trips to the slow filing cabinet.
+    Read Q:        n × d           ← each Q block loaded once, total n rows
+    Read K:        (n/Br) × n × d  ← every K block re-read once per Q block
+    Read V:        (n/Br) × n × d  ← same for V
+    Write O:       n × d
+    ──────────────────────────────
+    Total:         2(n × d) + 2(n²× d / Br)
+                               ^^^^^^^^^^^^
+                               K and V are re-read, but no n×n matrices
+
+S and P are never written to HBM at all. They only exist as small (Br × Bc)
+tiles in SRAM, computed and consumed immediately.
 ```
 
----
-
-## 4. Concrete Walkthrough: n=4, block_size=2
+### Why Flash wins despite re-reading K and V
 
 ```text
-Q, K, V are each (4, d). We split into blocks of 2 rows.
+Standard dominant cost:   4 × n²           (the n×n matrix, 4 passes)
+Flash dominant cost:      2 × n² × d / Br  (K and V re-reads)
 
-Q blocks: Q₁ = Q[0:2], Q₂ = Q[2:4]
-K blocks: K₁ = K[0:2], K₂ = K[2:4]
-V blocks: V₁ = V[0:2], V₂ = V[2:4]
+Flash wins when:
+    2 × n² × d / Br  <  4 × n²
+    d / Br  <  2
+    Br  >  d / 2
 
---- Processing Q₁ (rows 0-1) ---
+The saving grows as Br gets larger. Br is not d — it's a sequence-dimension
+block size, limited by SRAM capacity.
 
-    Load Q₁ into SRAM
+In practice (A100, d=128):
+    SRAM per block ≈ 20 KB
+    One Q block: Br × d × 2 bytes = Br × 256 bytes
+    Br ≈ 80 tokens comfortably fits alongside K, V blocks and accumulators
 
-    Tile (Q₁, K₁):
-        Load K₁, V₁ into SRAM
-        S_tile = Q₁ × K₁ᵀ                  → (2, 2) scores for positions 0-1 vs 0-1
-        m₁ = row-wise max of S_tile
-        l₁ = row-wise sum of exp(S_tile - m₁)
-        O₁ = (1/l₁) × exp(S_tile - m₁) × V₁
+    At Br = 128:  Flash cost = 2 × n² × 128/128 = 2n²  vs standard 4n²  → 2× saving
+    At Br = 256:  Flash cost = 2 × n² × 128/256 = n²   vs standard 4n²  → 4× saving
 
-    Tile (Q₁, K₂):
-        Load K₂, V₂ into SRAM
-        S_tile = Q₁ × K₂ᵀ                  → (2, 2) scores for positions 0-1 vs 2-3
-        m₂ = max(m₁, row-wise max of S_tile)
-        rescale = exp(m₁ - m₂)               ← correction factor
-        l₂ = l₁ × rescale + row-wise sum of exp(S_tile - m₂)
-        O₁ = (l₁ × rescale × O₁ + exp(S_tile - m₂) × V₂) / l₂
-                   ^^^^^^^^^^^^^^^
-                   rescale previous output to match new max
+The larger the blocks SRAM can hold, the bigger the win.
+```
 
-    Write O₁ (rows 0-1 of final output) to HBM. Done with Q₁.
+### Concrete numbers (n=8192, d=128, Br=128)
 
---- Processing Q₂ (rows 2-3) ---
+```text
+Standard — n×n passes:
+    4 × 8192² = 268M scalar values through HBM
 
-    Same process. Load Q₂, iterate over K₁ then K₂.
-    Write O₂ (rows 2-3) to HBM.
+Flash — extra K,V re-reads:
+    2 × 8192² × 128/128 = 134M scalar values through HBM
 
-Final output O = [O₁; O₂] — mathematically identical to standard attention.
-The (4, 4) score matrix was never stored in HBM. Only (2, 2) tiles existed in SRAM.
+Net saving: 134M fewer scalar reads/writes through HBM.
+
+Plus the memory benefit: S and P (each n×n) are never stored.
+At n=8192, FP16: each is 8192² × 2 bytes = 128 MB — per head, per layer.
+Flash uses O(n) memory instead of O(n²). This is what makes
+128K+ context windows physically possible.
 ```
 
 ---
