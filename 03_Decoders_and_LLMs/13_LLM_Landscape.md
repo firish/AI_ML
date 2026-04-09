@@ -486,6 +486,35 @@ With quantization (from file 08):
     3B at Q4 ≈ 1.5GB → runs on a phone
 ```
 
+### Running Models Locally
+
+```text
+"I want to run an LLM on my laptop"
+
+    Option 1: Ollama (simplest)
+        brew install ollama
+        ollama run llama3:8b          ← downloads and runs INT4 quantized
+        ollama run mistral:7b
+        Runs on CPU or Apple Silicon GPU. Just works.
+
+    Option 2: llama.cpp (most flexible)
+        Download GGUF quantized model from HuggingFace
+        ./main -m model.gguf -p "Hello"
+        Very optimized for CPU inference.
+        Supports Q4_0, Q4_K_M, Q5_K_M, Q8_0 quantization levels.
+
+    Option 3: vLLM (for serving)
+        pip install vllm
+        python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-3-8B
+        OpenAI-compatible API. Continuous batching + PagedAttention built in.
+
+What you can run:
+    MacBook (16GB RAM):   7B Q4 model   (decent quality, 10-20 tokens/sec)
+    MacBook (32GB RAM):   13B Q4 model  (good quality, 8-15 tokens/sec)
+    RTX 4090 (24GB):      13B FP16 or 34B Q4 (good speed)
+    A100 (80GB):          70B Q4 or 34B FP16 (production quality)
+```
+
 ---
 
 ## Multimodal LLMs — Connecting Back to Phase 1
