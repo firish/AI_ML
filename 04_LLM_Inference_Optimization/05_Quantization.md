@@ -186,7 +186,45 @@ Per-group (one scale per group of e.g. 128 values):
 
 ---
 
-## 4. Weight-Only vs Weight + Activation Quantization
+## 4. What Are Activations?
+
+```text
+Activations are the intermediate values that flow through the network
+during a forward pass — the tensors that aren't weights.
+
+Think of it this way:
+
+    x (input) → Linear layer → y (output)
+
+    Linear.weight — the stored weight matrix (static, lives on disk/HBM)
+    x             — the activation coming in (dynamic, computed at runtime)
+    y             — also an activation going out
+
+In a transformer, activations are everywhere:
+
+    token embeddings          ← activation
+          ↓
+    LayerNorm output          ← activation
+          ↓
+    Q = x @ W_q               ← Q is an activation, W_q is a weight
+    K = x @ W_k               ← same
+    V = x @ W_v               ← same
+          ↓
+    scores = Q @ K.T          ← activation
+    attn = softmax(scores)    ← activation
+    out = attn @ V            ← activation
+          ↓
+    MLP hidden states         ← activations
+
+The key distinction:
+
+    Weights      — known before inference, static, loaded from HBM once
+    Activations  — computed at runtime, depend on the actual input tokens
+```
+
+---
+
+## 5. Weight-Only vs Weight + Activation Quantization
 
 ### Two approaches
 
@@ -244,7 +282,7 @@ The problem: activation outliers.
 
 ---
 
-## 5. Common Quantization Methods
+## 6. Common Quantization Methods
 
 ### Post-Training Quantization (PTQ) — no retraining needed
 
@@ -300,7 +338,7 @@ QAT simulates quantization during training:
 
 ---
 
-## 6. Practical Numbers
+## 7. Practical Numbers
 
 ```text
 LLaMA 2 7B inference on a single GPU:
