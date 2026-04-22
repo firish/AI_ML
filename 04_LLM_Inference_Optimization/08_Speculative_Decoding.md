@@ -250,12 +250,43 @@ Medusa (Cai et al., 2024):
     No separate draft model needed. No extra memory for a second model.
     But requires training the extra heads on representative data.
 
+    Typical config: K = 5 heads (some configs go up to 8).
+
+    Key limitation — heads are INDEPENDENT:
+        Each head sees the same final hidden state h_t and predicts its
+        position blindly. Head 3 predicting t+3 has no knowledge of what
+        Head 2 guessed for t+2. This independence limits accuracy at
+        longer offsets.
+
 EAGLE (Li et al., 2024):
-    Uses a lightweight draft head that takes the target model's
-    hidden states as input to predict the next token's hidden state.
-    More accurate than Medusa because it conditions on hidden states,
-    not just the final layer output.
-    Achieves higher acceptance rates.
+    Uses a lightweight autoregressive draft head that takes the target
+    model's hidden states as input to predict the next token's hidden state.
+
+    How it works (step by step):
+        1. Target model runs → produces hidden state h_t + token t
+        2. Draft model takes (token_embedding(t), h_t) as input
+           → predicts h_{t+1}
+        3. Apply LM head to h_{t+1} → draft token t+1
+        4. Feed (token_embedding(t+1), h_{t+1}) back in → predict h_{t+2}
+        5. Repeat
+
+    By predicting hidden states (not just logits), each draft step
+    conditions on the full context of previous draft steps.
+    This keeps the draft distribution close to the target's true distribution
+    → higher acceptance rates than Medusa.
+
+    Draft token count:
+        EAGLE builds a draft TREE of ~60 candidates per round (branching
+        top-2 or top-3 at each step), then verifies the whole tree in one
+        target-model forward pass with tree attention.
+        Average accepted tokens: ~5-6 per step.
+
+    Comparison:
+        Medusa  — K=5 independent heads, ~2-2.5× speedup
+        EAGLE   — autoregressive hidden-state draft, ~2.5-3.5× speedup
+                  better acceptance rate because each draft step conditions
+                  on previous draft context; tree drafting recovers from
+                  rejected branches by trying siblings
 ```
 
 ### Prompt lookup decoding (no draft model at all)
